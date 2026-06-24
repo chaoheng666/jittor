@@ -6,12 +6,16 @@ class FeatureBuilder:
     def __init__(self, recent_limit=20):
         self.recent_limit = recent_limit
         self.pair_count = Counter()
+        self.pair_recent_count = Counter()
         self.pair_last_time = {}
         self.dst_count = Counter()
         self.dst_recent_count = Counter()
         self.dst_old_count = Counter()
         self.dst_last_time = {}
+        self.dst_unique_src_count = Counter()
         self.src_count = Counter()
+        self.src_unique_dst_count = Counter()
+        self.src_repeat_rate = defaultdict(float)
         self.src_last_dst = {}
         self.src_recent = defaultdict(lambda: deque(maxlen=recent_limit))
         self.src_recent_5 = {}
@@ -29,6 +33,8 @@ class FeatureBuilder:
         self.min_time = edges[0][2]
         self.max_time = edges[-1][2]
         self.recent_start = self.max_time - (self.max_time - self.min_time) // 5
+        src_dst_sets = defaultdict(set)
+        dst_src_sets = defaultdict(set)
 
         for src, dst, time in edges:
             pair = (src, dst)
@@ -37,12 +43,24 @@ class FeatureBuilder:
             self.dst_count[dst] += 1
             self.dst_last_time[dst] = time
             self.src_count[src] += 1
+            src_dst_sets[src].add(dst)
+            dst_src_sets[dst].add(src)
             self.src_last_dst[src] = dst
             self.src_recent[src].append(dst)
             if time >= self.recent_start:
+                self.pair_recent_count[pair] += 1
                 self.dst_recent_count[dst] += 1
             else:
                 self.dst_old_count[dst] += 1
+
+        for src, dsts in src_dst_sets.items():
+            unique_count = len(dsts)
+            self.src_unique_dst_count[src] = unique_count
+            total_count = self.src_count[src]
+            if total_count:
+                self.src_repeat_rate[src] = 1.0 - unique_count / total_count
+        for dst, srcs in dst_src_sets.items():
+            self.dst_unique_src_count[dst] = len(srcs)
 
         for src, recent in self.src_recent.items():
             values = list(recent)
@@ -68,7 +86,9 @@ class FeatureBuilder:
             "bias": 1.0,
             "has_pair": 1.0 if self.pair_count[pair] else 0.0,
             "pair_count": math.log1p(self.pair_count[pair]),
+            "pair_recent_count": math.log1p(self.pair_recent_count[pair]),
             "pair_recency": self.recency(last_time) if last_time is not None else 0.0,
+            "pair_time_gap": math.log1p(max(time - last_time, 0)) if last_time is not None else 0.0,
             "in_recent_5": 1.0 if dst in recent[-5:] else 0.0,
             "in_recent_10": 1.0 if dst in recent[-10:] else 0.0,
             "in_recent_20": 1.0 if dst in recent[-20:] else 0.0,
@@ -77,8 +97,12 @@ class FeatureBuilder:
             "dst_recent_popularity": math.log1p(dst_recent),
             "dst_trend": math.log1p(dst_recent) - math.log1p(dst_old),
             "src_activity": math.log1p(self.src_count[src]),
+            "src_unique_dst": math.log1p(self.src_unique_dst_count[src]),
+            "src_repeat_rate": self.src_repeat_rate[src],
             "is_cold_dst": 1.0 if dst_count == 0 else 0.0,
             "dst_recency": self.recency(dst_last_time) if dst_last_time is not None else 0.0,
+            "dst_time_gap": math.log1p(max(time - dst_last_time, 0)) if dst_last_time is not None else 0.0,
+            "dst_unique_src": math.log1p(self.dst_unique_src_count[dst]),
             "item_transition": 0.0,
         }
         return feats

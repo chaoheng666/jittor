@@ -1,7 +1,7 @@
 import math
 from collections import Counter, defaultdict
 
-from feature_builder import FeatureBuilder
+from .feature_builder import FeatureBuilder
 
 
 DEFAULT_WEIGHTS = {
@@ -17,6 +17,9 @@ DEFAULT_WEIGHTS = {
         "dst_recent_popularity": 0.6,
         "dst_recency": 0.5,
         "item_transition": 2.0,
+        "pair_recent_count": 2.0,
+        "src_repeat_rate": 1.0,
+        "dst_unique_src": 0.2,
     },
     "dataset2": {
         "has_pair": 1.0,
@@ -29,6 +32,9 @@ DEFAULT_WEIGHTS = {
         "is_cold_dst": -1.0,
         "dst_recency": 1.0,
         "item_transition": 2.5,
+        "pair_recent_count": 0.8,
+        "src_repeat_rate": 0.3,
+        "dst_unique_src": 0.6,
     },
 }
 
@@ -63,6 +69,8 @@ class RuleRankerV2:
             score += self.weights.get("has_pair", 0.0)
             score += self.weights.get("pair_count", 0.0) * math.log1p(pair_count)
             score += self.weights.get("pair_recency", 0.0) * fb.recency(fb.pair_last_time[pair])
+            score += self.weights.get("pair_recent_count", 0.0) * math.log1p(fb.pair_recent_count[pair])
+            score += self.weights.get("src_repeat_rate", 0.0) * fb.src_repeat_rate[src]
 
         if dst in fb.src_recent_5.get(src, ()):
             score += self.weights.get("in_recent_5", 0.0)
@@ -78,6 +86,7 @@ class RuleRankerV2:
         dst_old = fb.dst_old_count[dst]
         score += self.weights.get("dst_popularity", 0.0) * math.log1p(dst_count)
         score += self.weights.get("dst_recent_popularity", 0.0) * math.log1p(dst_recent)
+        score += self.weights.get("dst_unique_src", 0.0) * math.log1p(fb.dst_unique_src_count[dst])
         trend = math.log1p(dst_recent) - math.log1p(dst_old)
         score += self.weights.get("dst_trend", 0.0) * trend
         score += self.weights.get("src_activity", 0.0) * math.log1p(fb.src_count[src])

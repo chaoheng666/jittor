@@ -1,10 +1,14 @@
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 
-from data_loader import iter_train_edges
-from rule_ranker_v2 import RuleRankerV2
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
+
+from src.data_loader import iter_train_edges
+from src.rule_ranker_v2 import RuleRankerV2
 
 
 def load_weights(path, dataset_name):

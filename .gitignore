@@ -1,0 +1,17 @@
+*.csv
+*.zip
+*.pkl
+*.pth
+*.npy
+*.npz
+
+__pycache__/
+*.pyc
+.venv_jittor/
+
+data_A/
+downloads/
+validation/
+submission/
+submission_*/
+models/
