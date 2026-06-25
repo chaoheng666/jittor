@@ -16,6 +16,8 @@ FEATURE_NAMES = [
     "in_recent_5",
     "in_recent_10",
     "in_recent_20",
+    "recent_count",
+    "recent_rank_score",
     "is_last_dst",
     "dst_popularity",
     "dst_recent_popularity",

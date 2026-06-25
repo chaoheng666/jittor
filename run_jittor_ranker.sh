@@ -12,7 +12,14 @@ EPOCHS="${EPOCHS:-8}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 HIDDEN_DIM="${HIDDEN_DIM:-64}"
 MAX_VALID="${MAX_VALID:-0}"
+VALID_RATIO="${VALID_RATIO:-0.2}"
+HARD_RECENT_LIMIT="${HARD_RECENT_LIMIT:-20}"
+HARD_TRANSITION_LIMIT="${HARD_TRANSITION_LIMIT:-50}"
+HARD_POPULAR_LIMIT="${HARD_POPULAR_LIMIT:-500}"
+HARD_POPULAR_SAMPLE="${HARD_POPULAR_SAMPLE:-200}"
 FUSE_RULE="${FUSE_RULE:-1.0}"
+MLP_WEIGHT="${MLP_WEIGHT:-0.2}"
+EVAL_RATIO="${EVAL_RATIO:-0.2}"
 USE_CUDA="${USE_CUDA:-1}"
 USE_VENV="${USE_VENV:-1}"
 VENV_DIR="${VENV_DIR:-.venv_jittor}"
@@ -119,7 +126,12 @@ echo "building validation samples"
 "$PYTHON_BIN" scripts/valid_builder.py \
   --data-dir "$DATA_DIR" \
   --out-dir "$VALID_DIR" \
-  --max-valid "$MAX_VALID"
+  --valid-ratio "$VALID_RATIO" \
+  --max-valid "$MAX_VALID" \
+  --hard-recent-limit "$HARD_RECENT_LIMIT" \
+  --hard-transition-limit "$HARD_TRANSITION_LIMIT" \
+  --hard-popular-limit "$HARD_POPULAR_LIMIT" \
+  --hard-popular-sample "$HARD_POPULAR_SAMPLE"
 
 CUDA_ARG=""
 if [ "$USE_CUDA" = "1" ]; then
@@ -134,6 +146,8 @@ echo "training jittor mlp ranker"
   --batch-size "$BATCH_SIZE" \
   --hidden-dim "$HIDDEN_DIM" \
   --fuse-rule "$FUSE_RULE" \
+  --mlp-weight "$MLP_WEIGHT" \
+  --eval-ratio "$EVAL_RATIO" \
   $CUDA_ARG
 
 echo "predicting final submission"

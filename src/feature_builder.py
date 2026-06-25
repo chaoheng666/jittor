@@ -81,6 +81,12 @@ class FeatureBuilder:
         dst_recent = self.dst_recent_count[dst]
         last_time = self.pair_last_time.get(pair)
         dst_last_time = self.dst_last_time.get(dst)
+        recent_count = recent.count(dst)
+        recent_rank_score = 0.0
+        for idx in range(len(recent) - 1, -1, -1):
+            if recent[idx] == dst:
+                recent_rank_score = 1.0 / (len(recent) - idx)
+                break
 
         feats = {
             "bias": 1.0,
@@ -92,6 +98,8 @@ class FeatureBuilder:
             "in_recent_5": 1.0 if dst in recent[-5:] else 0.0,
             "in_recent_10": 1.0 if dst in recent[-10:] else 0.0,
             "in_recent_20": 1.0 if dst in recent[-20:] else 0.0,
+            "recent_count": math.log1p(recent_count),
+            "recent_rank_score": recent_rank_score,
             "is_last_dst": 1.0 if self.src_last_dst.get(src) == dst else 0.0,
             "dst_popularity": math.log1p(dst_count),
             "dst_recent_popularity": math.log1p(dst_recent),

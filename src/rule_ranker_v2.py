@@ -12,6 +12,8 @@ DEFAULT_WEIGHTS = {
         "in_recent_5": 3.0,
         "in_recent_10": 2.0,
         "in_recent_20": 1.0,
+        "recent_count": 1.0,
+        "recent_rank_score": 2.0,
         "is_last_dst": 3.0,
         "dst_popularity": 0.4,
         "dst_recent_popularity": 0.6,
@@ -33,6 +35,8 @@ DEFAULT_WEIGHTS = {
         "dst_recency": 1.0,
         "item_transition": 2.5,
         "pair_recent_count": 0.8,
+        "recent_count": 0.3,
+        "recent_rank_score": 0.5,
         "src_repeat_rate": 0.3,
         "dst_unique_src": 0.6,
     },
@@ -78,6 +82,14 @@ class RuleRankerV2:
             score += self.weights.get("in_recent_10", 0.0)
         if dst in fb.src_recent_20.get(src, ()):
             score += self.weights.get("in_recent_20", 0.0)
+        recent = list(fb.src_recent.get(src, ()))
+        recent_count = recent.count(dst)
+        if recent_count:
+            score += self.weights.get("recent_count", 0.0) * math.log1p(recent_count)
+            for idx in range(len(recent) - 1, -1, -1):
+                if recent[idx] == dst:
+                    score += self.weights.get("recent_rank_score", 0.0) / (len(recent) - idx)
+                    break
         if fb.src_last_dst.get(src) == dst:
             score += self.weights.get("is_last_dst", 0.0)
 

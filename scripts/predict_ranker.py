@@ -24,12 +24,22 @@ def softmax(scores):
     return exp_scores / total
 
 
+def normalize_positive(scores):
+    scores = np.asarray(scores, dtype=np.float64)
+    total = scores.sum()
+    if total <= 0:
+        return np.full(len(scores), 1.0 / len(scores))
+    return scores / total
+
+
 def write_dataset_submission(dataset_dir, model_dir, output_path, mode, batch_size):
     model_path = Path(model_dir) / f"{dataset_dir.name}_jt_ranker.pkl"
     model, meta = load_model(model_path)
     mean = np.asarray(meta["mean"], dtype=np.float32)
     std = np.asarray(meta["std"], dtype=np.float32)
     fuse_rule = float(meta.get("fuse_rule", 1.0))
+    mlp_weight = float(meta.get("mlp_weight", 1.0))
+    use_mlp = bool(meta.get("use_mlp", True))
     rule_idx = FEATURE_NAMES.index("rule_score")
 
     feature_builder = CandidateFeatureBuilder(dataset_dir.name)
@@ -42,20 +52,27 @@ def write_dataset_submission(dataset_dir, model_dir, output_path, mode, batch_si
         for src, time, candidates in iter_test_rows(dataset_dir / "test.csv"):
             rows.append(feature_builder.matrix(src, time, candidates))
             if len(rows) >= batch_size:
-                written += write_batch(writer, model, rows, mean, std, rule_idx, fuse_rule, mode)
+                written += write_batch(writer, model, rows, mean, std, rule_idx, fuse_rule, mlp_weight, use_mlp, mode)
                 rows.clear()
         if rows:
-            written += write_batch(writer, model, rows, mean, std, rule_idx, fuse_rule, mode)
+            written += write_batch(writer, model, rows, mean, std, rule_idx, fuse_rule, mlp_weight, use_mlp, mode)
     return written
 
 
-def write_batch(writer, model, rows, mean, std, rule_idx, fuse_rule, mode):
+def write_batch(writer, model, rows, mean, std, rule_idx, fuse_rule, mlp_weight, use_mlp, mode):
     x_raw = np.asarray(rows, dtype=np.float32)
+    rule_scores = np.expm1(x_raw[:, :, rule_idx])
+    if mode == "fuse" and not use_mlp:
+        for row_scores in rule_scores:
+            probs = normalize_positive(row_scores)
+            writer.writerow([f"{p:.8f}" for p in probs])
+        return len(rows)
+
     x = normalize_features(x_raw, mean, std).astype(np.float32)
     model.eval()
     scores = model(jt.array(x)).numpy()
     if mode == "fuse":
-        scores = scores + x_raw[:, :, rule_idx] * fuse_rule
+        scores = x_raw[:, :, rule_idx] * fuse_rule + np.tanh(scores) * mlp_weight
     for row_scores in scores:
         probs = softmax(row_scores)
         writer.writerow([f"{p:.8f}" for p in probs])
