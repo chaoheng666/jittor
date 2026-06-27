@@ -1,127 +1,107 @@
-﻿# Jittor MLP Ranker
+# Jittor Temporal Graph Re-Ranker
 
-本项目包含规则排序模型和 Jittor MLP Ranker。当前推荐直接运行一键脚本：它会检查数据目录、准备 Python/Jittor 环境、构造候选训练样本、训练 MLP，并生成最终提交 zip。
+这是赛道一“基于图学习的动态推荐任务”的候选内精排方案。测试集已经给出每个 `(src, time)` 的 100 个候选 `dst`，所以本仓库不做全量召回，专注把这 100 个候选排准。
 
-## 当前训练状态
+## 关键改动
 
-训练脚本本身已经可以用于训练，但需要先满足两个条件：
+- `dataset1` 按高重复边场景处理：强化历史 pair、最近交互、pair recency、source 最近序列。
+- `dataset2` 按二部图新链接场景处理：历史 pair 会降权，训练中未出现的 cold dst 会强惩罚，强化 dst 新近热度、item-to-item 转移和滑窗共现。
+- 验证集默认使用 `test-prior` 候选构造：从测试候选中估计 cold dst 比例，让本地验证更接近线上候选分布。
+- 融合不再固定从规则模型开始，而是在验证集上选择单体最强组件作为起点，再贪心加入 MLP、序列模型和可选 CRAFT 动态图模型。
 
-- 数据目录存在：`data_A/dataset1` 和 `data_A/dataset2` 下都有 `train.csv`、`test.csv`
-- 当前 Python 环境已安装 `jittor`
+## 一键训练并生成提交
 
-如果直接手动运行：
-
-```bash
-python scripts/train_ranker.py --valid-dir validation --model-dir models --epochs 8 --batch-size 256
-```
-
-还需要先用 `scripts/valid_builder.py` 生成 `validation` 目录。当前更推荐用一键脚本 `run_jittor_ranker.sh`，它会自动检查数据、下载数据、安装 Jittor、构造验证样本、训练模型并生成提交文件。
-
-## 当前建模思路
-
-当前题目按“时序图上的下一跳候选排序”建模。测试文件已经给出每个 `(src, time)` 对应的 100 个候选 `dst`，所以本项目不做全量节点召回，而是专注于候选内精排序。
-
-整体流程：
-
-```text
-历史边 (src, dst, time)
-        ↓
-构造验证候选：1 个真实 dst + 99 个负样本
-        ↓
-为每个候选 (src, dst, time) 构造时序/热度/关系特征
-        ↓
-RuleRankerV2 生成规则分
-        ↓
-Jittor MLP 学习候选内打分
-        ↓
-输出 MLP 分数 + 规则分融合后的 100 个候选概率
-```
-
-当前特征主要包括：
-
-- `src-dst` 历史交互次数、是否交互过、最近交互时间、近期交互次数
-- `dst` 是否出现在 `src` 最近 5/10/20 次交互中
-- `dst` 全局热度、近期热度、趋势、最近出现时间、不同 `src` 覆盖数
-- `src` 活跃度、历史不同 `dst` 数、重复连接偏好
-- 上一个 `dst` 到当前候选 `dst` 的转移次数
-- `RuleRankerV2` 的规则排序分
-
-训练目标是让真实 `dst` 在 100 个候选中排得尽量靠前，验证指标看 `mlp_mrr` 和 `fused_mrr`，默认保存 `fused_mrr` 最好的模型。
-
-## 一键运行
-
-Linux 服务器执行：
+Linux 服务器运行：
 
 ```bash
-bash run_jittor_ranker.sh
+bash run_luxury_ranker.sh
 ```
 
-默认参数：
-
-- 数据目录：`data_A`
-- 验证目录：`validation`
-- 模型目录：`models`
-- 提交目录：`submission_mlp`
-- 输出文件：`result_mlp.zip`
-- 训练轮数：`8`
-- batch size：`256`
-- 默认使用 CUDA：`USE_CUDA=1`
-- 默认创建虚拟环境：`.venv_jittor`
-
-数据目录需要包含：
+默认输出：
 
 ```text
-data_A/
-  dataset1/train.csv
-  dataset1/test.csv
-  dataset2/train.csv
-  dataset2/test.csv
+result.zip
+  dataset1.csv
+  dataset2.csv
 ```
 
-如果 `data_A` 不存在，脚本会自动从清华云下载数据并解压：
+如果 `data_A/dataset1` 和 `data_A/dataset2` 不存在，脚本会自动从题目链接下载并解压。脚本会自动安装 `jittor`；如果环境里已有 `jittor_geometric`，会额外训练 CRAFT 动态图模型，否则自动跳过 CRAFT，不影响 MLP/序列融合。
 
-```text
-https://cloud.tsinghua.edu.cn/f/6a9569def9044d49bb96/?dl=1
-```
+## 推荐正式配置
 
-也可以手动覆盖下载链接：
+8 卡 V100 直接用默认配置即可：
 
 ```bash
-DATA_URL="https://your-data-url" bash run_jittor_ranker.sh
+GPU_COUNT=8 MAX_PARALLEL=8 USE_CUDA=1 bash run_luxury_ranker.sh
+```
+
+也可以直接跑预设版本，按优先级从 `v1` 开始：
+
+```bash
+bash run_luxury_ranker_v1.sh
+bash run_luxury_ranker_v2.sh
+bash run_luxury_ranker_v3.sh
+bash run_luxury_ranker_v4.sh
+bash run_luxury_ranker_v5.sh
+```
+
+版本用途：
+
+| 脚本 | 输出 | 用途 |
+| --- | --- | --- |
+| `run_luxury_ranker_v1.sh` | `result_v1.zip` | 最推荐，平衡重复边和新链接，全量 ensemble。 |
+| `run_luxury_ranker_v2.sh` | `result_v2_newlink.zip` | 偏二部图新链接，转移/热度/长序列更强。 |
+| `run_luxury_ranker_v3.sh` | `result_v3_repeat.zip` | 偏重复边保守，规则权重更高、残差更小。 |
+| `run_luxury_ranker_v4.sh` | `result_v4_fast.zip` | 快速稳健版，不跑 CRAFT，验证集默认 15 万。 |
+| `run_luxury_ranker_v5.sh` | `result_v5_craft.zip` | 动态图偏重，扩大 CRAFT sweep。 |
+
+如果服务器内存紧张，把本地验证样本截断到 12 万到 18 万：
+
+```bash
+MAX_VALID=150000 GPU_COUNT=8 MAX_PARALLEL=8 bash run_luxury_ranker.sh
+```
+
+如果已经安装官方 baseline 的 JittorGeometric 依赖，保留：
+
+```bash
+RUN_CRAFT=1 bash run_luxury_ranker.sh
+```
+
+如果没有这个依赖或 CRAFT 不稳定：
+
+```bash
+RUN_CRAFT=0 bash run_luxury_ranker.sh
 ```
 
 ## 常用参数
 
-不用 CUDA：
-
-```bash
-USE_CUDA=0 bash run_jittor_ranker.sh
-```
-
-不用虚拟环境，直接使用当前 Python：
-
-```bash
-USE_VENV=0 bash run_jittor_ranker.sh
-```
-
-调整训练参数：
-
-```bash
-EPOCHS=12 BATCH_SIZE=512 HIDDEN_DIM=128 bash run_jittor_ranker.sh
-```
-
-指定输出 zip：
-
-```bash
-ZIP_PATH=result_mlp_fuse.zip bash run_jittor_ranker.sh
-```
+- `MAX_VALID=0`：使用全部验证样本；内存不够时设为 `100000`、`150000`。
+- `VALID_MODE=test-prior`：默认，按测试候选 cold 比例构造验证集。
+- `MAX_COLD_POOL=2000000`：流式保留的 cold 候选池上限，B 榜内存紧张时可调小。
+- `MLP_HIDDEN_DIMS=64,128,256`、`MLP_WEIGHTS=0.1,0.2,0.35`：并行训练多组残差 MLP。
+- `SEQ_LENS=30,50,100`、`SEQ_GAMMAS=0.1,0.2,0.35`：并行训练 source 历史序列残差模型。
+- `RUN_CRAFT=1`：有 JittorGeometric 时加入动态图 CRAFT 分数缓存。
 
 ## 手动流程
 
 ```bash
-python scripts/valid_builder.py --data-dir data_A --out-dir validation --max-valid 0
-python scripts/train_ranker.py --valid-dir validation --model-dir models --epochs 8 --batch-size 256 --cuda
-python scripts/predict_ranker.py --data-dir data_A --model-dir models --out-dir submission_mlp --zip result_mlp.zip --mode fuse --cuda
+python scripts/valid_builder.py --data-dir data_A --out-dir validation_competition_test-prior --valid-mode test-prior --max-valid 150000
+python scripts/train_ranker.py --valid-dir validation_competition_test-prior --model-dir competition_models/mlp_h128_w0p2 --hidden-dim 128 --mlp-weight 0.2 --seed-list 2026,2027 --cuda
+python scripts/train_seq_ranker.py --valid-dir validation_competition_test-prior --model-dir competition_models/seq_l100_g0p2 --seq-len 100 --gamma 0.2 --hidden-dim 192 --seed-list 2026,2027 --cuda
+python scripts/search_ensemble.py --valid-dir validation_competition_test-prior --model-root competition_models --score-dir competition_scores --out competition_models/ensemble_weights.json
+python scripts/predict_luxury_ensemble.py --data-dir data_A --weights competition_models/ensemble_weights.json --zip result.zip
 ```
 
-更多说明见 `docs/RANKER_MLP.md`。
+提交前快速检查：
+
+```bash
+python - <<'PY'
+import csv, zipfile
+with zipfile.ZipFile("result.zip") as zf:
+    for name in sorted(zf.namelist()):
+        with zf.open(name) as f:
+            row = next(csv.reader(line.decode("utf-8") for line in f))
+        vals = [float(x) for x in row]
+        print(name, len(vals), min(vals), max(vals), sum(vals))
+PY
+```

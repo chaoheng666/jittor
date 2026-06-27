@@ -52,15 +52,26 @@ def evaluate_dataset(valid_dir, dataset_name, weights):
     return rr_sum / rows, rows
 
 
+def find_dataset_names(valid_dir, dataset_arg):
+    if dataset_arg != "all":
+        return [name.strip() for name in dataset_arg.split(",") if name.strip()]
+    return sorted(
+        p.name for p in valid_dir.iterdir()
+        if p.is_dir() and (p / "train.csv").exists() and (p / "valid.csv").exists()
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--valid-dir", default="validation")
-    parser.add_argument("--dataset", choices=["all", "dataset1", "dataset2"], default="all")
+    parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--weights")
     args = parser.parse_args()
 
     valid_dir = Path(args.valid_dir)
-    names = ["dataset1", "dataset2"] if args.dataset == "all" else [args.dataset]
+    names = find_dataset_names(valid_dir, args.dataset)
+    if not names:
+        raise ValueError(f"no validation datasets found in {valid_dir}")
     for name in names:
         mrr, rows = evaluate_dataset(valid_dir, name, load_weights(args.weights, name))
         print(f"{name}_mrr={mrr:.8f} rows={rows}")

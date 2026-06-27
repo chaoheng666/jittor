@@ -243,13 +243,23 @@ def train_one_dataset(args, dataset_name):
     print(f"{dataset_name}: saved CRAFT scores best_mrr={best_mrr:.8f}")
 
 
+def find_dataset_names(valid_dir, dataset_arg):
+    if dataset_arg != "all":
+        return [name.strip() for name in dataset_arg.split(",") if name.strip()]
+    valid_path = Path(valid_dir)
+    return sorted(
+        p.name for p in valid_path.iterdir()
+        if p.is_dir() and (p / "train.csv").exists() and (p / "valid.csv").exists()
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data_A")
     parser.add_argument("--valid-dir", default="validation")
     parser.add_argument("--model-dir", default="models_craft")
     parser.add_argument("--score-dir", default="luxury_scores")
-    parser.add_argument("--dataset", choices=["all", "dataset1", "dataset2"], default="all")
+    parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--run-name", default="")
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=200)
@@ -266,7 +276,9 @@ def main():
         jt.flags.use_cuda = 1
 
     os.makedirs(args.model_dir, exist_ok=True)
-    names = ["dataset1", "dataset2"] if args.dataset == "all" else [args.dataset]
+    names = find_dataset_names(args.valid_dir, args.dataset)
+    if not names:
+        raise ValueError(f"no validation datasets found in {args.valid_dir}")
     for name in names:
         train_one_dataset(args, name)
 

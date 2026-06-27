@@ -1,121 +1,124 @@
 import math
-from collections import Counter, defaultdict
+
+import numpy as np
 
 from .feature_builder import FeatureBuilder
 
 
+REPEAT_EDGE_WEIGHTS = {
+    "bias": 0.0,
+    "has_pair": 4.0,
+    "pair_count": 6.5,
+    "pair_recent_count": 2.0,
+    "pair_recency": 5.5,
+    "in_recent_5": 3.0,
+    "in_recent_10": 2.0,
+    "in_recent_20": 1.2,
+    "in_recent_50": 0.7,
+    "recent_count": 1.2,
+    "recent_decay_count": 1.5,
+    "recent_rank_score": 2.0,
+    "is_last_dst": 2.5,
+    "dst_seen": 0.2,
+    "dst_popularity": 0.35,
+    "dst_recent_popularity": 0.55,
+    "dst_recent_popularity_10": 0.25,
+    "dst_trend": 0.25,
+    "dst_recency": 0.45,
+    "dst_unique_src": 0.15,
+    "src_repeat_rate": 0.8,
+    "is_cold_dst": -2.0,
+    "last_transition": 1.8,
+    "last_cooc": 0.8,
+    "recent_transition_score": 1.1,
+    "recent_transition_hits": 0.4,
+    "recent_cooc_score": 0.9,
+    "recent_cooc_hits": 0.35,
+    "reverse_recent_transition_score": 0.3,
+    "reverse_recent_cooc_score": 0.25,
+}
+
+
+NEW_LINK_WEIGHTS = {
+    "bias": 0.0,
+    "has_pair": -2.8,
+    "pair_count": -1.8,
+    "pair_recent_count": -1.2,
+    "pair_recency": -0.5,
+    "in_recent_5": -1.2,
+    "in_recent_10": -0.9,
+    "in_recent_20": -0.6,
+    "in_recent_50": -0.35,
+    "recent_count": -0.4,
+    "recent_decay_count": -0.4,
+    "is_last_dst": -1.4,
+    "is_new_pair": 0.8,
+    "dst_seen": 2.4,
+    "is_cold_dst": -5.5,
+    "dst_popularity": 0.9,
+    "dst_unique_src": 0.65,
+    "dst_recent_popularity": 1.4,
+    "dst_recent_popularity_10": 1.2,
+    "dst_recent_popularity_05": 0.9,
+    "dst_trend": 0.7,
+    "dst_trend_10": 0.45,
+    "dst_recency": 1.2,
+    "src_activity": 0.05,
+    "src_unique_dst": 0.05,
+    "last_transition": 2.2,
+    "last_reverse_transition": 0.15,
+    "last_cooc": 1.6,
+    "recent_transition_score": 2.8,
+    "recent_transition_hits": 0.7,
+    "recent_cooc_score": 2.2,
+    "recent_cooc_hits": 0.65,
+    "reverse_recent_transition_score": 0.25,
+    "reverse_recent_cooc_score": 0.25,
+}
+
+
 DEFAULT_WEIGHTS = {
-    "dataset1": {
-        "has_pair": 4.0,
-        "pair_count": 8.0,
-        "pair_recency": 6.0,
-        "in_recent_5": 3.0,
-        "in_recent_10": 2.0,
-        "in_recent_20": 1.0,
-        "recent_count": 1.0,
-        "recent_rank_score": 2.0,
-        "is_last_dst": 3.0,
-        "dst_popularity": 0.4,
-        "dst_recent_popularity": 0.6,
-        "dst_recency": 0.5,
-        "item_transition": 2.0,
-        "pair_recent_count": 2.0,
-        "src_repeat_rate": 1.0,
-        "dst_unique_src": 0.2,
-    },
-    "dataset2": {
-        "has_pair": 1.0,
-        "pair_count": 2.0,
-        "pair_recency": 1.5,
-        "dst_popularity": 1.8,
-        "dst_recent_popularity": 2.2,
-        "dst_trend": 1.0,
-        "src_activity": 0.2,
-        "is_cold_dst": -1.0,
-        "dst_recency": 1.0,
-        "item_transition": 2.5,
-        "pair_recent_count": 0.8,
-        "recent_count": 0.3,
-        "recent_rank_score": 0.5,
-        "src_repeat_rate": 0.3,
-        "dst_unique_src": 0.6,
-    },
+    "dataset1": REPEAT_EDGE_WEIGHTS,
+    "dataset2": NEW_LINK_WEIGHTS,
 }
 
 
 class RuleRankerV2:
     def __init__(self, dataset_name="dataset1", weights=None):
         self.dataset_name = dataset_name
+        self._explicit_weights = weights is not None
         self.weights = dict(DEFAULT_WEIGHTS.get(dataset_name, {}))
         if weights:
             self.weights.update(weights)
         self.features = FeatureBuilder()
-        self.transition = defaultdict(Counter)
 
     def fit(self, train_edges):
         edges = list(train_edges)
         self.features.fit(edges)
-        by_src = defaultdict(list)
-        for src, dst, time in edges:
-            by_src[src].append((time, dst))
-        for rows in by_src.values():
-            rows.sort()
-            for i in range(1, len(rows)):
-                self.transition[rows[i - 1][1]][rows[i][1]] += 1
+        if not self._explicit_weights and not self.weights:
+            self.weights = dict(self._auto_weights())
+
+    def _auto_weights(self):
+        fb = self.features
+        if fb.is_bipartite_like or fb.repeat_edge_fraction < 0.08:
+            return NEW_LINK_WEIGHTS
+        return REPEAT_EDGE_WEIGHTS
 
     def score(self, src, time, dst):
-        fb = self.features
-        pair = (src, dst)
-        score = self.weights.get("bias", 0.0)
+        feats = self.features.features(src, time, dst)
+        score = 0.0
+        for name, weight in self.weights.items():
+            score += weight * feats.get(name, 0.0)
+        return float(score)
 
-        pair_count = fb.pair_count[pair]
-        if pair_count:
-            score += self.weights.get("has_pair", 0.0)
-            score += self.weights.get("pair_count", 0.0) * math.log1p(pair_count)
-            score += self.weights.get("pair_recency", 0.0) * fb.recency(fb.pair_last_time[pair])
-            score += self.weights.get("pair_recent_count", 0.0) * math.log1p(fb.pair_recent_count[pair])
-            score += self.weights.get("src_repeat_rate", 0.0) * fb.src_repeat_rate[src]
-
-        if dst in fb.src_recent_5.get(src, ()):
-            score += self.weights.get("in_recent_5", 0.0)
-        if dst in fb.src_recent_10.get(src, ()):
-            score += self.weights.get("in_recent_10", 0.0)
-        if dst in fb.src_recent_20.get(src, ()):
-            score += self.weights.get("in_recent_20", 0.0)
-        recent = list(fb.src_recent.get(src, ()))
-        recent_count = recent.count(dst)
-        if recent_count:
-            score += self.weights.get("recent_count", 0.0) * math.log1p(recent_count)
-            for idx in range(len(recent) - 1, -1, -1):
-                if recent[idx] == dst:
-                    score += self.weights.get("recent_rank_score", 0.0) / (len(recent) - idx)
-                    break
-        if fb.src_last_dst.get(src) == dst:
-            score += self.weights.get("is_last_dst", 0.0)
-
-        dst_count = fb.dst_count[dst]
-        dst_recent = fb.dst_recent_count[dst]
-        dst_old = fb.dst_old_count[dst]
-        score += self.weights.get("dst_popularity", 0.0) * math.log1p(dst_count)
-        score += self.weights.get("dst_recent_popularity", 0.0) * math.log1p(dst_recent)
-        score += self.weights.get("dst_unique_src", 0.0) * math.log1p(fb.dst_unique_src_count[dst])
-        trend = math.log1p(dst_recent) - math.log1p(dst_old)
-        score += self.weights.get("dst_trend", 0.0) * trend
-        score += self.weights.get("src_activity", 0.0) * math.log1p(fb.src_count[src])
-        if dst_count == 0:
-            score += self.weights.get("is_cold_dst", 0.0)
-        dst_last_time = fb.dst_last_time.get(dst)
-        if dst_last_time is not None:
-            score += self.weights.get("dst_recency", 0.0) * fb.recency(dst_last_time)
-
-        last_dst = self.features.src_last_dst.get(src)
-        if last_dst is not None:
-            score += self.weights.get("item_transition", 0.0) * self.transition[last_dst][dst]
-        return max(score, 0.0)
+    def score_many(self, src, time, candidates):
+        return [self.score(src, time, dst) for dst in candidates]
 
     def predict_proba(self, src, time, candidates):
-        scores = [self.score(src, time, dst) for dst in candidates]
-        total = sum(scores)
-        if total <= 0:
+        scores = np.asarray(self.score_many(src, time, candidates), dtype=np.float64)
+        scores = scores - scores.max()
+        exp_scores = np.exp(scores)
+        total = exp_scores.sum()
+        if not math.isfinite(total) or total <= 0:
             return [1.0 / len(candidates)] * len(candidates)
-        return [s / total for s in scores]
+        return (exp_scores / total).tolist()

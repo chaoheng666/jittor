@@ -24,9 +24,11 @@ def discover_components(dataset_name, model_root, score_dir):
     score_dir = Path(score_dir)
     components = []
     for path in sorted(model_root.rglob(f"{dataset_name}_jt_ranker.pkl")):
-        components.append({"name": path.parent.name, "type": "mlp", "path": str(path)})
+        name = path.parent.relative_to(model_root).as_posix()
+        components.append({"name": name, "type": "mlp", "path": str(path)})
     for path in sorted(model_root.rglob(f"{dataset_name}_seq_ranker.pkl")):
-        components.append({"name": path.parent.name, "type": "seq", "path": str(path)})
+        name = path.parent.relative_to(model_root).as_posix()
+        components.append({"name": name, "type": "seq", "path": str(path)})
     if score_dir.exists():
         for path in sorted(score_dir.glob(f"{dataset_name}_*_valid.npy")):
             name = path.name.removeprefix(f"{dataset_name}_").removesuffix("_valid.npy")
@@ -72,20 +74,24 @@ def search_dataset(args, dataset_name):
         scored.append((component_mrr, component, row_zscore(scores)))
         print(f"{dataset_name} component={component['name']} type={component['type']} mrr={component_mrr:.8f}")
 
+    if not scored:
+        raise ValueError(f"{dataset_name}: no valid ensemble components")
+
     scored.sort(key=lambda x: x[0], reverse=True)
-    rule_item = next((item for item in scored if item[1]["type"] == "rule"), scored[0])
-    current = rule_item[2].copy()
+    start_item = scored[0]
+    current = start_item[2].copy()
     best_mrr = mrr(current, labels)
-    selected = [{
-        "name": rule_item[1]["name"],
-        "type": rule_item[1]["type"],
-        "weight": 1.0,
-    }]
-    print(f"{dataset_name} start ensemble_mrr={best_mrr:.8f}")
+    selected_component = dict(start_item[1])
+    selected_component["weight"] = 1.0
+    selected = [selected_component]
+    print(
+        f"{dataset_name} start component={start_item[1]['name']} "
+        f"type={start_item[1]['type']} ensemble_mrr={best_mrr:.8f}"
+    )
 
     tried_weights = [float(x) for x in args.weight_grid.split(",") if x.strip()]
-    for _, component, scores in scored:
-        if component["type"] == "rule":
+    for _, component, scores in scored[1:]:
+        if component == start_item[1]:
             continue
         best_weight = 0.0
         best_candidate_mrr = best_mrr
@@ -112,18 +118,30 @@ def search_dataset(args, dataset_name):
     }
 
 
+def find_dataset_names(valid_dir, dataset_arg):
+    if dataset_arg != "all":
+        return [name.strip() for name in dataset_arg.split(",") if name.strip()]
+    valid_path = Path(valid_dir)
+    return sorted(
+        p.name for p in valid_path.iterdir()
+        if p.is_dir() and (p / "train.csv").exists() and (p / "valid.csv").exists()
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--valid-dir", default="validation")
     parser.add_argument("--model-root", default="luxury_models")
     parser.add_argument("--score-dir", default="luxury_scores")
     parser.add_argument("--out", default="luxury_models/ensemble_weights.json")
-    parser.add_argument("--dataset", choices=["all", "dataset1", "dataset2"], default="all")
+    parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--max-rows", type=int, default=0)
-    parser.add_argument("--weight-grid", default="0.05,0.1,0.2,0.3,0.5,0.8,1.0")
+    parser.add_argument("--weight-grid", default="0.02,0.05,0.08,0.1,0.15,0.2,0.3,0.5,0.8,1.0")
     args = parser.parse_args()
 
-    names = ["dataset1", "dataset2"] if args.dataset == "all" else [args.dataset]
+    names = find_dataset_names(args.valid_dir, args.dataset)
+    if not names:
+        raise ValueError(f"no validation datasets found in {args.valid_dir}")
     result = {"datasets": {}}
     for name in names:
         result["datasets"][name] = search_dataset(args, name)

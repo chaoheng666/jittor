@@ -12,6 +12,9 @@ __pycache__/
 data_A/
 downloads/
 validation/
+validation_*/
 submission/
 submission_*/
 models/
+competition_models/
+competition_scores/

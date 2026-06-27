@@ -1,6 +1,3 @@
-import math
-from collections import Counter, defaultdict
-
 import jittor as jt
 from jittor import nn
 
@@ -11,28 +8,54 @@ from .rule_ranker_v2 import RuleRankerV2
 FEATURE_NAMES = [
     "bias",
     "has_pair",
+    "is_new_pair",
     "pair_count",
+    "pair_recent_count",
     "pair_recency",
+    "pair_time_gap",
     "in_recent_5",
     "in_recent_10",
     "in_recent_20",
+    "in_recent_50",
     "recent_count",
+    "recent_decay_count",
     "recent_rank_score",
     "is_last_dst",
+    "dst_seen",
+    "is_cold_dst",
     "dst_popularity",
     "dst_recent_popularity",
+    "dst_recent_popularity_10",
+    "dst_recent_popularity_05",
     "dst_trend",
-    "src_activity",
-    "is_cold_dst",
+    "dst_trend_10",
     "dst_recency",
+    "dst_time_gap",
+    "dst_unique_src",
+    "src_activity",
+    "src_unique_dst",
+    "src_recent_unique_20",
+    "src_repeat_rate",
+    "src_avg_gap",
+    "last_transition",
+    "last_reverse_transition",
+    "last_cooc",
+    "recent_transition_score",
+    "reverse_recent_transition_score",
+    "recent_transition_hits",
+    "recent_cooc_score",
+    "reverse_recent_cooc_score",
+    "recent_cooc_hits",
     "item_transition",
     "rule_score",
-    "pair_recent_count",
-    "pair_time_gap",
-    "dst_time_gap",
-    "src_unique_dst",
-    "dst_unique_src",
-    "src_repeat_rate",
+    "row_pair_rank",
+    "row_dst_pop_rank",
+    "row_dst_recent_rank",
+    "row_dst_recency_rank",
+    "row_transition_rank",
+    "row_cooc_rank",
+    "row_rule_rank",
+    "row_is_rule_top1",
 ]
 
 
@@ -41,31 +64,56 @@ class CandidateFeatureBuilder:
         self.dataset_name = dataset_name
         self.features = FeatureBuilder()
         self.rule_ranker = RuleRankerV2(dataset_name)
-        self.transition = defaultdict(Counter)
 
     def fit(self, train_edges):
         edges = list(train_edges)
         self.features.fit(edges)
         self.rule_ranker.fit(edges)
 
-        by_src = defaultdict(list)
-        for src, dst, time in edges:
-            by_src[src].append((time, dst))
-        for rows in by_src.values():
-            rows.sort()
-            for i in range(1, len(rows)):
-                self.transition[rows[i - 1][1]][rows[i][1]] += 1
-
     def vector(self, src, time, dst):
         feats = self.features.features(src, time, dst)
-        last_dst = self.features.src_last_dst.get(src)
-        if last_dst is not None:
-            feats["item_transition"] = math.log1p(self.transition[last_dst][dst])
-        feats["rule_score"] = math.log1p(self.rule_ranker.score(src, time, dst))
+        feats["rule_score"] = self.rule_ranker.score(src, time, dst)
         return [float(feats.get(name, 0.0)) for name in FEATURE_NAMES]
 
     def matrix(self, src, time, candidates):
-        return [self.vector(src, time, dst) for dst in candidates]
+        rows = [self.vector(src, time, dst) for dst in candidates]
+        self._add_row_context(rows)
+        return rows
+
+    @staticmethod
+    def _rank_percentiles(values):
+        n = len(values)
+        if n <= 1:
+            return [1.0] * n
+        order = sorted(range(n), key=lambda i: (values[i], i))
+        ranks = [0.0] * n
+        for rank, idx in enumerate(order):
+            ranks[idx] = rank / (n - 1)
+        return ranks
+
+    def _add_row_context(self, rows):
+        rank_pairs = [
+            ("pair_count", "row_pair_rank"),
+            ("dst_popularity", "row_dst_pop_rank"),
+            ("dst_recent_popularity", "row_dst_recent_rank"),
+            ("dst_recency", "row_dst_recency_rank"),
+            ("recent_transition_score", "row_transition_rank"),
+            ("recent_cooc_score", "row_cooc_rank"),
+            ("rule_score", "row_rule_rank"),
+        ]
+        for source_name, target_name in rank_pairs:
+            source_idx = FEATURE_NAMES.index(source_name)
+            target_idx = FEATURE_NAMES.index(target_name)
+            values = [row[source_idx] for row in rows]
+            ranks = self._rank_percentiles(values)
+            for row, rank in zip(rows, ranks):
+                row[target_idx] = rank
+
+        rule_idx = FEATURE_NAMES.index("rule_score")
+        top_idx = FEATURE_NAMES.index("row_is_rule_top1")
+        if rows:
+            best = max(range(len(rows)), key=lambda i: rows[i][rule_idx])
+            rows[best][top_idx] = 1.0
 
 
 class MLPRanker(nn.Module):

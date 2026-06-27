@@ -198,11 +198,21 @@ def train_one_dataset(args, dataset_name):
     print(f"{dataset_name}: saved {best_path} best_fused_mrr={best_mrr:.8f}")
 
 
+def find_dataset_names(valid_dir, dataset_arg):
+    if dataset_arg != "all":
+        return [name.strip() for name in dataset_arg.split(",") if name.strip()]
+    valid_path = Path(valid_dir)
+    return sorted(
+        p.name for p in valid_path.iterdir()
+        if p.is_dir() and (p / "train.csv").exists() and (p / "valid.csv").exists()
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--valid-dir", default="validation")
     parser.add_argument("--model-dir", default="models_seq")
-    parser.add_argument("--dataset", choices=["all", "dataset1", "dataset2"], default="all")
+    parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--seq-len", type=int, default=50)
@@ -225,7 +235,9 @@ def main():
     if args.cuda:
         jt.flags.use_cuda = 1
 
-    names = ["dataset1", "dataset2"] if args.dataset == "all" else [args.dataset]
+    names = find_dataset_names(args.valid_dir, args.dataset)
+    if not names:
+        raise ValueError(f"no validation datasets found in {args.valid_dir}")
     seeds = [int(x) for x in args.seed_list.split(",") if x.strip()]
     if not seeds:
         seeds = [args.seed]
