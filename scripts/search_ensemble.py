@@ -9,13 +9,16 @@ sys.path.insert(0, str(ROOT_DIR))
 import numpy as np
 
 from src.luxury_scoring import (
+    cached_rule_scores,
     load_train_edges,
     load_valid_queries,
     mrr,
     row_zscore,
     score_mlp_model,
+    score_mlp_model_cached,
     score_rule,
     score_seq_model,
+    score_seq_model_cached,
 )
 
 
@@ -42,8 +45,18 @@ def discover_components(dataset_name, model_root, score_dir):
     return components
 
 
-def component_scores(component, dataset_name, dataset_dir, train_edges, queries, max_rows):
+def component_scores(component, dataset_name, dataset_dir, train_edges, queries, max_rows, cache_dir=""):
     ctype = component["type"]
+    if cache_dir:
+        if ctype == "rule":
+            scores = cached_rule_scores(cache_dir, dataset_name, "valid")
+            return scores[:max_rows] if max_rows else scores
+        if ctype == "mlp":
+            scores = score_mlp_model_cached(component["path"], dataset_name, cache_dir, "valid")
+            return scores[:max_rows] if max_rows else scores
+        if ctype == "seq":
+            scores = score_seq_model_cached(component["path"], dataset_name, cache_dir, "valid")
+            return scores[:max_rows] if max_rows else scores
     if ctype == "rule":
         return score_rule(dataset_name, train_edges, queries)
     if ctype == "mlp":
@@ -58,15 +71,24 @@ def component_scores(component, dataset_name, dataset_dir, train_edges, queries,
 
 def search_dataset(args, dataset_name):
     dataset_dir = Path(args.valid_dir) / dataset_name
-    train_edges = load_train_edges(dataset_dir)
-    queries, labels = load_valid_queries(dataset_dir, args.max_rows)
+    if args.cache_dir:
+        labels = np.load(Path(args.cache_dir) / dataset_name / "y_valid.npy", mmap_mode="r")
+        if args.max_rows:
+            labels = labels[:args.max_rows]
+        train_edges = None
+        queries = None
+    else:
+        train_edges = load_train_edges(dataset_dir)
+        queries, labels = load_valid_queries(dataset_dir, args.max_rows)
 
     base_components = [{"name": "rule", "type": "rule"}]
     base_components.extend(discover_components(dataset_name, args.model_root, args.score_dir))
 
     scored = []
     for component in base_components:
-        scores = component_scores(component, dataset_name, dataset_dir, train_edges, queries, args.max_rows)
+        scores = component_scores(
+            component, dataset_name, dataset_dir, train_edges, queries, args.max_rows, args.cache_dir
+        )
         if len(scores) != len(labels):
             print(f"skip {dataset_name}:{component['name']} row mismatch {len(scores)} != {len(labels)}")
             continue
@@ -136,6 +158,7 @@ def main():
     parser.add_argument("--out", default="luxury_models/ensemble_weights.json")
     parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--max-rows", type=int, default=0)
+    parser.add_argument("--cache-dir", default="")
     parser.add_argument("--weight-grid", default="0.02,0.05,0.08,0.1,0.15,0.2,0.3,0.5,0.8,1.0")
     args = parser.parse_args()
 

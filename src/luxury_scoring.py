@@ -83,6 +83,14 @@ def score_rule(dataset_name, train_edges, queries):
     return rule_scores_from_features(build_feature_array(dataset_name, train_edges, queries))
 
 
+def load_cached_x(cache_dir, dataset_name, kind):
+    return np.load(Path(cache_dir) / dataset_name / f"x_{kind}.npy", mmap_mode="r")
+
+
+def cached_rule_scores(cache_dir, dataset_name, kind):
+    return rule_scores_from_features(load_cached_x(cache_dir, dataset_name, kind))
+
+
 def score_mlp_model(model_path, dataset_name, train_edges, queries, batch_size=512):
     model, meta = load_model(model_path)
     x_raw = build_feature_array(dataset_name, train_edges, queries)
@@ -101,6 +109,28 @@ def score_mlp_model(model_path, dataset_name, train_edges, queries, batch_size=5
     for start in range(0, len(x), batch_size):
         end = min(start + batch_size, len(x))
         scores = model(jt.array(x[start:end])).numpy()
+        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * mlp_weight)
+    return np.vstack(out)
+
+
+def score_mlp_model_cached(model_path, dataset_name, cache_dir, kind, batch_size=512):
+    model, meta = load_model(model_path)
+    x_raw = load_cached_x(cache_dir, dataset_name, kind)
+    mean = np.asarray(meta["mean"], dtype=np.float32)
+    std = np.asarray(meta["std"], dtype=np.float32)
+    fuse_rule = float(meta.get("fuse_rule", 1.0))
+    mlp_weight = float(meta.get("mlp_weight", 1.0))
+    use_mlp = bool(meta.get("use_mlp", True))
+    rule = rule_scores_from_features(x_raw)
+    if not use_mlp:
+        return np.asarray(rule, dtype=np.float32)
+
+    model.eval()
+    out = []
+    for start in range(0, len(x_raw), batch_size):
+        end = min(start + batch_size, len(x_raw))
+        x = normalize_features(np.asarray(x_raw[start:end], dtype=np.float32), mean, std).astype(np.float32)
+        scores = model(jt.array(x)).numpy()
         out.append(rule[start:end] * fuse_rule + np.tanh(scores) * mlp_weight)
     return np.vstack(out)
 
@@ -149,6 +179,39 @@ def score_seq_model(model_path, dataset_name, train_edges, queries, batch_size=2
             jt.array(seq_gap[start:end]),
             jt.array(cand_idx[start:end]),
             jt.array(x[start:end]),
+        ).numpy()
+        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * gamma)
+    return np.vstack(out)
+
+
+def score_seq_model_cached(model_path, dataset_name, cache_dir, kind, batch_size=256):
+    model, meta = load_seq_model(model_path)
+    dataset_cache = Path(cache_dir) / dataset_name
+    seq_len = int(meta.get("seq_len", 50))
+    x_raw = np.load(dataset_cache / f"x_{kind}.npy", mmap_mode="r")
+    seq_dst = np.load(dataset_cache / f"seq_l{seq_len}_{kind}_dst.npy", mmap_mode="r")
+    seq_gap = np.load(dataset_cache / f"seq_l{seq_len}_{kind}_gap.npy", mmap_mode="r")
+    cand_idx = np.load(dataset_cache / f"seq_l{seq_len}_{kind}_cand.npy", mmap_mode="r")
+
+    mean = np.asarray(meta["mean"], dtype=np.float32)
+    std = np.asarray(meta["std"], dtype=np.float32)
+    rule = rule_scores_from_features(x_raw)
+    fuse_rule = float(meta.get("fuse_rule", 1.0))
+    gamma = float(meta.get("gamma", 0.2))
+    use_seq = bool(meta.get("use_seq", True))
+    if not use_seq:
+        return np.asarray(rule, dtype=np.float32)
+
+    model.eval()
+    out = []
+    for start in range(0, len(x_raw), batch_size):
+        end = min(start + batch_size, len(x_raw))
+        x = normalize_features(np.asarray(x_raw[start:end], dtype=np.float32), mean, std).astype(np.float32)
+        scores = model(
+            jt.array(seq_dst[start:end]),
+            jt.array(seq_gap[start:end]),
+            jt.array(cand_idx[start:end]),
+            jt.array(x),
         ).numpy()
         out.append(rule[start:end] * fuse_rule + np.tanh(scores) * gamma)
     return np.vstack(out)

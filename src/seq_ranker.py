@@ -11,6 +11,7 @@ class SequenceFeatureBuilder:
         self.seq_len = seq_len
         self.max_time_bucket = max_time_bucket
         self.by_src = defaultdict(list)
+        self.by_src_times = {}
         self.dst_to_idx = {"<PAD>": 0, "<UNK>": 1}
         self.dst_values = []
 
@@ -38,8 +39,13 @@ class SequenceFeatureBuilder:
 
     def fit_history(self, train_edges):
         self.by_src.clear()
+        self.by_src_times.clear()
         for src, dst, time in sorted(train_edges, key=lambda x: x[2]):
             self.by_src[src].append((time, dst))
+        self.by_src_times = {
+            src: [row[0] for row in rows]
+            for src, rows in self.by_src.items()
+        }
 
     def _add_dst(self, dst):
         if dst not in self.dst_to_idx:
@@ -50,7 +56,7 @@ class SequenceFeatureBuilder:
 
     def build_query(self, src, time, candidates):
         rows = self.by_src.get(src, [])
-        times = [row[0] for row in rows]
+        times = self.by_src_times.get(src, [])
         end = bisect.bisect_left(times, time)
         hist = rows[max(0, end - self.seq_len):end]
 

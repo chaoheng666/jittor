@@ -18,3 +18,6 @@ submission_*/
 models/
 competition_models/
 competition_scores/
+feature_cache*/
+fast_models*/
+fast_scores*/

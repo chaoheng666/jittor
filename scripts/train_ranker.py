@@ -52,8 +52,34 @@ def build_arrays(dataset_dir, dataset_name, max_rows):
     return np.asarray(xs, dtype=np.float32), np.asarray(labels, dtype=np.int32)
 
 
+def load_cached_arrays(cache_dir, dataset_name, max_rows):
+    dataset_cache = Path(cache_dir) / dataset_name
+    x = np.load(dataset_cache / "x_valid.npy", mmap_mode="r")
+    y = np.load(dataset_cache / "y_valid.npy", mmap_mode="r")
+    if max_rows:
+        x = x[:max_rows]
+        y = y[:max_rows]
+    return x, y
+
+
+def feature_mean_std(x_raw, chunk_size=2048):
+    feature_dim = x_raw.shape[-1]
+    total = np.zeros(feature_dim, dtype=np.float64)
+    total_sq = np.zeros(feature_dim, dtype=np.float64)
+    count = 0
+    for start in range(0, len(x_raw), chunk_size):
+        chunk = np.asarray(x_raw[start:start + chunk_size], dtype=np.float32).reshape(-1, feature_dim)
+        total += chunk.sum(axis=0)
+        total_sq += (chunk.astype(np.float64) ** 2).sum(axis=0)
+        count += len(chunk)
+    mean = (total / max(count, 1)).astype(np.float32)
+    var = total_sq / max(count, 1) - mean.astype(np.float64) ** 2
+    std = np.sqrt(np.maximum(var, 1e-12)).astype(np.float32)
+    std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
+    return mean, std
+
+
 def evaluate(model, x_raw, y, mean, std, fuse_rule, mlp_weight):
-    x = normalize_features(x_raw, mean, std).astype(np.float32)
     rr_rule = 0.0
     rr_mlp = 0.0
     rr_fused = 0.0
@@ -61,9 +87,10 @@ def evaluate(model, x_raw, y, mean, std, fuse_rule, mlp_weight):
     rule_idx = FEATURE_NAMES.index("rule_score")
 
     model.eval()
-    for start in range(0, len(x), 512):
-        end = min(start + 512, len(x))
-        scores = model(jt.array(x[start:end])).numpy()
+    for start in range(0, len(x_raw), 512):
+        end = min(start + 512, len(x_raw))
+        x = normalize_features(np.asarray(x_raw[start:end], dtype=np.float32), mean, std).astype(np.float32)
+        scores = model(jt.array(x)).numpy()
         raw_rule = x_raw[start:end, :, rule_idx]
         fused = raw_rule * fuse_rule + np.tanh(scores) * mlp_weight
         for i in range(end - start):
@@ -77,7 +104,10 @@ def evaluate(model, x_raw, y, mean, std, fuse_rule, mlp_weight):
 
 def train_one_dataset(args, dataset_name):
     dataset_dir = Path(args.valid_dir) / dataset_name
-    x_all, y_all = build_arrays(dataset_dir, dataset_name, args.max_rows)
+    if args.cache_dir:
+        x_all, y_all = load_cached_arrays(args.cache_dir, dataset_name, args.max_rows)
+    else:
+        x_all, y_all = build_arrays(dataset_dir, dataset_name, args.max_rows)
     if len(x_all) >= 5:
         cut = max(1, int(len(x_all) * (1.0 - args.eval_ratio)))
         x_raw, y = x_all[:cut], y_all[:cut]
@@ -86,15 +116,11 @@ def train_one_dataset(args, dataset_name):
         x_raw, y = x_all, y_all
         eval_x_raw, eval_y = x_all, y_all
 
-    mean = x_raw.reshape(-1, x_raw.shape[-1]).mean(axis=0)
-    std = x_raw.reshape(-1, x_raw.shape[-1]).std(axis=0)
-    std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
-    mean = mean.astype(np.float32)
-    x = normalize_features(x_raw, mean, std).astype(np.float32)
+    mean, std = feature_mean_std(x_raw)
 
-    model = MLPRanker(x.shape[-1], args.hidden_dim)
+    model = MLPRanker(x_raw.shape[-1], args.hidden_dim)
     optimizer = nn.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    order = list(range(len(x)))
+    order = list(range(len(x_raw)))
     rng = random.Random(args.seed)
 
     best_mrr = -1.0
@@ -106,9 +132,10 @@ def train_one_dataset(args, dataset_name):
         steps = 0
         for start in range(0, len(order), args.batch_size):
             batch_idx = order[start:start + args.batch_size]
-            bx = jt.array(x[batch_idx])
+            bx_raw = np.asarray(x_raw[batch_idx], dtype=np.float32)
+            bx = jt.array(normalize_features(bx_raw, mean, std).astype(np.float32))
             by = jt.array(y[batch_idx])
-            br = jt.array(x_raw[batch_idx, :, FEATURE_NAMES.index("rule_score")])
+            br = jt.array(bx_raw[:, :, FEATURE_NAMES.index("rule_score")])
             scores = model(bx)
             loss = nn.cross_entropy_loss(br * args.fuse_rule + jt.tanh(scores) * args.mlp_weight, by)
             optimizer.step(loss)
@@ -126,7 +153,7 @@ def train_one_dataset(args, dataset_name):
             best_mrr = fused_mrr
             save_model(best_path, model, {
                 "dataset_name": dataset_name,
-                "feature_dim": int(x.shape[-1]),
+                "feature_dim": int(x_raw.shape[-1]),
                 "hidden_dim": int(args.hidden_dim),
                 "feature_names": FEATURE_NAMES,
                 "mean": mean.tolist(),
@@ -164,6 +191,7 @@ def main():
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--seed-list", default="")
+    parser.add_argument("--cache-dir", default="")
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
 

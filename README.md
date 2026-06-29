@@ -49,11 +49,19 @@ bash run_luxury_ranker_v5.sh
 
 | 脚本 | 输出 | 用途 |
 | --- | --- | --- |
-| `run_luxury_ranker_v1.sh` | `result_v1.zip` | 最推荐，平衡重复边和新链接，全量 ensemble。 |
-| `run_luxury_ranker_v2.sh` | `result_v2_newlink.zip` | 偏二部图新链接，转移/热度/长序列更强。 |
-| `run_luxury_ranker_v3.sh` | `result_v3_repeat.zip` | 偏重复边保守，规则权重更高、残差更小。 |
-| `run_luxury_ranker_v4.sh` | `result_v4_fast.zip` | 快速稳健版，不跑 CRAFT，验证集默认 15 万。 |
-| `run_luxury_ranker_v5.sh` | `result_v5_craft.zip` | 动态图偏重，扩大 CRAFT sweep。 |
+| `run_luxury_ranker_v1.sh` | `result_v1_fast.zip` | 最推荐快版，单参数单 seed，48 核构建缓存，按数据集/模型并行用 GPU。 |
+| `run_luxury_ranker_v2.sh` | `result_v2_newlink_fast.zip` | 快速新链接版，转移/热度/长序列更强。 |
+| `run_luxury_ranker_v3.sh` | `result_v3_repeat_fast.zip` | 快速重复边保守版，规则权重更高、残差更小。 |
+| `run_luxury_ranker_v4.sh` | `result_v4_nocraft_fast.zip` | 快速无 CRAFT 对照，验证集默认 15 万。 |
+| `run_luxury_ranker_v5.sh` | `result_v5_craft_fast.zip` | 快速动态图偏重版，单 CRAFT 参数，无 sweep。 |
+
+如果你只想尽快出一个强结果，先跑：
+
+```bash
+bash run_luxury_ranker_v1.sh
+```
+
+所有 `v1` 到 `v5` 都不做多参数 sweep。它们会先用 `FEATURE_WORKERS=48` 构建 `x_valid/x_test/seq_valid/seq_test` 缓存，然后并行启动同一套参数下的 `dataset × MLP/Seq/CRAFT` 训练任务。A 榜两个数据集通常会同时占用 4 到 6 张 GPU；B 榜场景更多时会自然把 8 卡占满。
 
 如果服务器内存紧张，把本地验证样本截断到 12 万到 18 万：
 

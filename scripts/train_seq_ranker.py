@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import random
 import sys
 from pathlib import Path
@@ -74,8 +75,42 @@ def build_arrays(dataset_dir, dataset_name, seq_len, max_rows):
     )
 
 
+def load_cached_arrays(cache_dir, dataset_name, seq_len, max_rows):
+    dataset_cache = Path(cache_dir) / dataset_name
+    x = np.load(dataset_cache / "x_valid.npy", mmap_mode="r")
+    seq_dst = np.load(dataset_cache / f"seq_l{seq_len}_valid_dst.npy", mmap_mode="r")
+    seq_gap = np.load(dataset_cache / f"seq_l{seq_len}_valid_gap.npy", mmap_mode="r")
+    cand_idx = np.load(dataset_cache / f"seq_l{seq_len}_valid_cand.npy", mmap_mode="r")
+    y = np.load(dataset_cache / "y_valid.npy", mmap_mode="r")
+    with open(dataset_cache / f"seq_l{seq_len}_dst_values.json", encoding="utf-8") as f:
+        dst_values = json.load(f)
+    if max_rows:
+        x = x[:max_rows]
+        seq_dst = seq_dst[:max_rows]
+        seq_gap = seq_gap[:max_rows]
+        cand_idx = cand_idx[:max_rows]
+        y = y[:max_rows]
+    return x, seq_dst, seq_gap, cand_idx, y, dst_values
+
+
+def feature_mean_std(x_raw, chunk_size=2048):
+    feature_dim = x_raw.shape[-1]
+    total = np.zeros(feature_dim, dtype=np.float64)
+    total_sq = np.zeros(feature_dim, dtype=np.float64)
+    count = 0
+    for start in range(0, len(x_raw), chunk_size):
+        chunk = np.asarray(x_raw[start:start + chunk_size], dtype=np.float32).reshape(-1, feature_dim)
+        total += chunk.sum(axis=0)
+        total_sq += (chunk.astype(np.float64) ** 2).sum(axis=0)
+        count += len(chunk)
+    mean = (total / max(count, 1)).astype(np.float32)
+    var = total_sq / max(count, 1) - mean.astype(np.float64) ** 2
+    std = np.sqrt(np.maximum(var, 1e-12)).astype(np.float32)
+    std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
+    return mean, std
+
+
 def evaluate(model, x_raw, seq_dst, seq_gap, cand_idx, y, mean, std, fuse_rule, gamma):
-    x = normalize_features(x_raw, mean, std).astype(np.float32)
     rule_idx = FEATURE_NAMES.index("rule_score")
     rr_rule = 0.0
     rr_seq = 0.0
@@ -83,8 +118,9 @@ def evaluate(model, x_raw, seq_dst, seq_gap, cand_idx, y, mean, std, fuse_rule, 
     rows = 0
 
     model.eval()
-    for start in range(0, len(x), 256):
-        end = min(start + 256, len(x))
+    for start in range(0, len(x_raw), 256):
+        end = min(start + 256, len(x_raw))
+        x = normalize_features(np.asarray(x_raw[start:end], dtype=np.float32), mean, std).astype(np.float32)
         scores = model(
             jt.array(seq_dst[start:end]),
             jt.array(seq_gap[start:end]),
@@ -104,9 +140,14 @@ def evaluate(model, x_raw, seq_dst, seq_gap, cand_idx, y, mean, std, fuse_rule, 
 
 def train_one_dataset(args, dataset_name):
     dataset_dir = Path(args.valid_dir) / dataset_name
-    x_all, sd_all, sg_all, ci_all, y_all, dst_values = build_arrays(
-        dataset_dir, dataset_name, args.seq_len, args.max_rows
-    )
+    if args.cache_dir:
+        x_all, sd_all, sg_all, ci_all, y_all, dst_values = load_cached_arrays(
+            args.cache_dir, dataset_name, args.seq_len, args.max_rows
+        )
+    else:
+        x_all, sd_all, sg_all, ci_all, y_all, dst_values = build_arrays(
+            dataset_dir, dataset_name, args.seq_len, args.max_rows
+        )
     if len(x_all) >= 5:
         cut = max(1, int(len(x_all) * (1.0 - args.eval_ratio)))
         train_slice = slice(0, cut)
@@ -127,14 +168,11 @@ def train_one_dataset(args, dataset_name):
     eval_cand_idx = ci_all[eval_slice]
     eval_y = y_all[eval_slice]
 
-    mean = x_raw.reshape(-1, x_raw.shape[-1]).mean(axis=0).astype(np.float32)
-    std = x_raw.reshape(-1, x_raw.shape[-1]).std(axis=0)
-    std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
-    x = normalize_features(x_raw, mean, std).astype(np.float32)
+    mean, std = feature_mean_std(x_raw)
 
     model = SeqResidualRanker(
         len(dst_values),
-        x.shape[-1],
+        x_raw.shape[-1],
         seq_len=args.seq_len,
         dst_emb_dim=args.dst_emb_dim,
         time_emb_dim=args.time_emb_dim,
@@ -142,7 +180,7 @@ def train_one_dataset(args, dataset_name):
         dropout=args.dropout,
     )
     optimizer = nn.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    order = list(range(len(x)))
+    order = list(range(len(x_raw)))
     rng = random.Random(args.seed)
     rule_idx = FEATURE_NAMES.index("rule_score")
 
@@ -155,13 +193,14 @@ def train_one_dataset(args, dataset_name):
         steps = 0
         for start in range(0, len(order), args.batch_size):
             batch_idx = order[start:start + args.batch_size]
+            bx_raw = np.asarray(x_raw[batch_idx], dtype=np.float32)
             scores = model(
                 jt.array(seq_dst[batch_idx]),
                 jt.array(seq_gap[batch_idx]),
                 jt.array(cand_idx[batch_idx]),
-                jt.array(x[batch_idx]),
+                jt.array(normalize_features(bx_raw, mean, std).astype(np.float32)),
             )
-            br = jt.array(x_raw[batch_idx, :, rule_idx])
+            br = jt.array(bx_raw[:, :, rule_idx])
             by = jt.array(y[batch_idx])
             loss = nn.cross_entropy_loss(br * args.fuse_rule + jt.tanh(scores) * args.gamma, by)
             optimizer.step(loss)
@@ -182,7 +221,7 @@ def train_one_dataset(args, dataset_name):
                 "dataset_name": dataset_name,
                 "n_dst": len(dst_values),
                 "dst_values": dst_values,
-                "feature_dim": int(x.shape[-1]),
+                "feature_dim": int(x_raw.shape[-1]),
                 "feature_names": FEATURE_NAMES,
                 "mean": mean.tolist(),
                 "std": std.tolist(),
@@ -229,6 +268,7 @@ def main():
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--seed-list", default="")
+    parser.add_argument("--cache-dir", default="")
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
 
