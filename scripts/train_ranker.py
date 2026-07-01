@@ -79,6 +79,21 @@ def feature_mean_std(x_raw, chunk_size=2048):
     return mean, std
 
 
+def hard_candidate_mask(rule_scores, labels, hard_negatives):
+    if hard_negatives <= 0 or hard_negatives >= rule_scores.shape[1] - 1:
+        return np.ones(rule_scores.shape, dtype=np.float32)
+
+    mask = np.zeros(rule_scores.shape, dtype=np.float32)
+    for row_idx, label in enumerate(labels):
+        label = int(label)
+        mask[row_idx, label] = 1.0
+        row = np.asarray(rule_scores[row_idx], dtype=np.float32).copy()
+        row[label] = -np.inf
+        hard_idx = np.argpartition(row, -hard_negatives)[-hard_negatives:]
+        mask[row_idx, hard_idx] = 1.0
+    return mask
+
+
 def evaluate(model, x_raw, y, mean, std, fuse_rule, mlp_weight):
     rr_rule = 0.0
     rr_mlp = 0.0
@@ -137,7 +152,15 @@ def train_one_dataset(args, dataset_name):
             by = jt.array(y[batch_idx])
             br = jt.array(bx_raw[:, :, FEATURE_NAMES.index("rule_score")])
             scores = model(bx)
-            loss = nn.cross_entropy_loss(br * args.fuse_rule + jt.tanh(scores) * args.mlp_weight, by)
+            logits = br * args.fuse_rule + jt.tanh(scores) * args.mlp_weight
+            if args.hard_negatives > 0:
+                mask = hard_candidate_mask(
+                    bx_raw[:, :, FEATURE_NAMES.index("rule_score")],
+                    y[batch_idx],
+                    args.hard_negatives,
+                )
+                logits = logits + (jt.array(mask) - 1.0) * 10000.0
+            loss = nn.cross_entropy_loss(logits, by)
             optimizer.step(loss)
             loss_sum += float(loss.numpy())
             steps += 1
@@ -160,7 +183,8 @@ def train_one_dataset(args, dataset_name):
                 "std": std.tolist(),
                 "fuse_rule": float(args.fuse_rule),
                 "mlp_weight": float(args.mlp_weight),
-                "use_mlp": bool(fused_mrr > rule_mrr),
+                "hard_negatives": int(args.hard_negatives),
+                "use_mlp": True,
             })
     print(f"{dataset_name}: saved {best_path} best_fused_mrr={best_mrr:.8f}")
 
@@ -188,6 +212,7 @@ def main():
     parser.add_argument("--fuse-rule", type=float, default=1.0)
     parser.add_argument("--mlp-weight", type=float, default=0.2)
     parser.add_argument("--eval-ratio", type=float, default=0.2)
+    parser.add_argument("--hard-negatives", type=int, default=30)
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--seed-list", default="")

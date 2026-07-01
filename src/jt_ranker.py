@@ -68,11 +68,11 @@ class CandidateFeatureBuilder:
     def fit(self, train_edges):
         edges = list(train_edges)
         self.features.fit(edges)
-        self.rule_ranker.fit(edges)
+        self.rule_ranker.use_feature_builder(self.features)
 
     def vector(self, src, time, dst):
         feats = self.features.features(src, time, dst)
-        feats["rule_score"] = self.rule_ranker.score(src, time, dst)
+        feats["rule_score"] = self.rule_ranker.score_from_features(feats)
         return [float(feats.get(name, 0.0)) for name in FEATURE_NAMES]
 
     def matrix(self, src, time, candidates):

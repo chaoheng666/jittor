@@ -24,24 +24,13 @@ from src.luxury_scoring import (
 
 def discover_components(dataset_name, model_root, score_dir):
     model_root = Path(model_root)
-    score_dir = Path(score_dir)
     components = []
     for path in sorted(model_root.rglob(f"{dataset_name}_jt_ranker.pkl")):
         name = path.parent.relative_to(model_root).as_posix()
-        components.append({"name": name, "type": "mlp", "path": str(path)})
+        components.append({"name": f"{name}:residual", "type": "mlp", "path": str(path), "score_mode": "residual"})
     for path in sorted(model_root.rglob(f"{dataset_name}_seq_ranker.pkl")):
         name = path.parent.relative_to(model_root).as_posix()
-        components.append({"name": name, "type": "seq", "path": str(path)})
-    if score_dir.exists():
-        for path in sorted(score_dir.glob(f"{dataset_name}_*_valid.npy")):
-            name = path.name.removeprefix(f"{dataset_name}_").removesuffix("_valid.npy")
-            test_path = score_dir / f"{dataset_name}_{name}_test.npy"
-            components.append({
-                "name": name,
-                "type": "craft",
-                "path": str(path),
-                "test_path": str(test_path),
-            })
+        components.append({"name": f"{name}:residual", "type": "seq", "path": str(path), "score_mode": "residual"})
     return components
 
 
@@ -52,20 +41,25 @@ def component_scores(component, dataset_name, dataset_dir, train_edges, queries,
             scores = cached_rule_scores(cache_dir, dataset_name, "valid")
             return scores[:max_rows] if max_rows else scores
         if ctype == "mlp":
-            scores = score_mlp_model_cached(component["path"], dataset_name, cache_dir, "valid")
+            scores = score_mlp_model_cached(
+                component["path"], dataset_name, cache_dir, "valid", score_mode=component.get("score_mode", "fused")
+            )
             return scores[:max_rows] if max_rows else scores
         if ctype == "seq":
-            scores = score_seq_model_cached(component["path"], dataset_name, cache_dir, "valid")
+            scores = score_seq_model_cached(
+                component["path"], dataset_name, cache_dir, "valid", score_mode=component.get("score_mode", "fused")
+            )
             return scores[:max_rows] if max_rows else scores
     if ctype == "rule":
         return score_rule(dataset_name, train_edges, queries)
     if ctype == "mlp":
-        return score_mlp_model(component["path"], dataset_name, train_edges, queries)
+        return score_mlp_model(
+            component["path"], dataset_name, train_edges, queries, score_mode=component.get("score_mode", "fused")
+        )
     if ctype == "seq":
-        return score_seq_model(component["path"], dataset_name, train_edges, queries)
-    if ctype == "craft":
-        scores = np.load(component["path"])
-        return scores[:max_rows] if max_rows else scores
+        return score_seq_model(
+            component["path"], dataset_name, train_edges, queries, score_mode=component.get("score_mode", "fused")
+        )
     raise ValueError(f"unknown component type: {ctype}")
 
 
@@ -123,7 +117,7 @@ def search_dataset(args, dataset_name):
             if candidate_mrr > best_candidate_mrr + 1e-12:
                 best_candidate_mrr = candidate_mrr
                 best_weight = weight
-        if best_weight > 0:
+        if best_weight != 0.0:
             current = current + scores * best_weight
             best_mrr = best_candidate_mrr
             item = dict(component)
@@ -159,7 +153,10 @@ def main():
     parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--cache-dir", default="")
-    parser.add_argument("--weight-grid", default="0.02,0.05,0.08,0.1,0.15,0.2,0.3,0.5,0.8,1.0")
+    parser.add_argument(
+        "--weight-grid",
+        default="-1.0,-0.8,-0.5,-0.3,-0.2,-0.15,-0.1,-0.08,-0.05,-0.02,0.02,0.05,0.08,0.1,0.15,0.2,0.3,0.5,0.8,1.0",
+    )
     args = parser.parse_args()
 
     names = find_dataset_names(args.valid_dir, args.dataset)

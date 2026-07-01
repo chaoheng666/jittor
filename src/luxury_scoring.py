@@ -91,51 +91,51 @@ def cached_rule_scores(cache_dir, dataset_name, kind):
     return rule_scores_from_features(load_cached_x(cache_dir, dataset_name, kind))
 
 
-def score_mlp_model(model_path, dataset_name, train_edges, queries, batch_size=512):
+def score_mlp_model(model_path, dataset_name, train_edges, queries, batch_size=512, score_mode="fused"):
     model, meta = load_model(model_path)
     x_raw = build_feature_array(dataset_name, train_edges, queries)
     mean = np.asarray(meta["mean"], dtype=np.float32)
     std = np.asarray(meta["std"], dtype=np.float32)
     fuse_rule = float(meta.get("fuse_rule", 1.0))
     mlp_weight = float(meta.get("mlp_weight", 1.0))
-    use_mlp = bool(meta.get("use_mlp", True))
     rule = rule_scores_from_features(x_raw)
-    if not use_mlp:
-        return rule
 
     x = normalize_features(x_raw, mean, std).astype(np.float32)
     model.eval()
     out = []
     for start in range(0, len(x), batch_size):
         end = min(start + batch_size, len(x))
-        scores = model(jt.array(x[start:end])).numpy()
-        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * mlp_weight)
+        residual = np.tanh(model(jt.array(x[start:end])).numpy())
+        if score_mode == "residual":
+            out.append(residual)
+        else:
+            out.append(rule[start:end] * fuse_rule + residual * mlp_weight)
     return np.vstack(out)
 
 
-def score_mlp_model_cached(model_path, dataset_name, cache_dir, kind, batch_size=512):
+def score_mlp_model_cached(model_path, dataset_name, cache_dir, kind, batch_size=512, score_mode="fused"):
     model, meta = load_model(model_path)
     x_raw = load_cached_x(cache_dir, dataset_name, kind)
     mean = np.asarray(meta["mean"], dtype=np.float32)
     std = np.asarray(meta["std"], dtype=np.float32)
     fuse_rule = float(meta.get("fuse_rule", 1.0))
     mlp_weight = float(meta.get("mlp_weight", 1.0))
-    use_mlp = bool(meta.get("use_mlp", True))
     rule = rule_scores_from_features(x_raw)
-    if not use_mlp:
-        return np.asarray(rule, dtype=np.float32)
 
     model.eval()
     out = []
     for start in range(0, len(x_raw), batch_size):
         end = min(start + batch_size, len(x_raw))
         x = normalize_features(np.asarray(x_raw[start:end], dtype=np.float32), mean, std).astype(np.float32)
-        scores = model(jt.array(x)).numpy()
-        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * mlp_weight)
+        residual = np.tanh(model(jt.array(x)).numpy())
+        if score_mode == "residual":
+            out.append(residual)
+        else:
+            out.append(rule[start:end] * fuse_rule + residual * mlp_weight)
     return np.vstack(out)
 
 
-def score_seq_model(model_path, dataset_name, train_edges, queries, batch_size=256):
+def score_seq_model(model_path, dataset_name, train_edges, queries, batch_size=256, score_mode="fused"):
     model, meta = load_seq_model(model_path)
     feature_builder = CandidateFeatureBuilder(dataset_name)
     feature_builder.fit(train_edges)
@@ -166,25 +166,25 @@ def score_seq_model(model_path, dataset_name, train_edges, queries, batch_size=2
     rule = rule_scores_from_features(x_raw)
     fuse_rule = float(meta.get("fuse_rule", 1.0))
     gamma = float(meta.get("gamma", 0.2))
-    use_seq = bool(meta.get("use_seq", True))
-    if not use_seq:
-        return rule
 
     model.eval()
     out = []
     for start in range(0, len(x), batch_size):
         end = min(start + batch_size, len(x))
-        scores = model(
+        residual = np.tanh(model(
             jt.array(seq_dst[start:end]),
             jt.array(seq_gap[start:end]),
             jt.array(cand_idx[start:end]),
             jt.array(x[start:end]),
-        ).numpy()
-        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * gamma)
+        ).numpy())
+        if score_mode == "residual":
+            out.append(residual)
+        else:
+            out.append(rule[start:end] * fuse_rule + residual * gamma)
     return np.vstack(out)
 
 
-def score_seq_model_cached(model_path, dataset_name, cache_dir, kind, batch_size=256):
+def score_seq_model_cached(model_path, dataset_name, cache_dir, kind, batch_size=256, score_mode="fused"):
     model, meta = load_seq_model(model_path)
     dataset_cache = Path(cache_dir) / dataset_name
     seq_len = int(meta.get("seq_len", 50))
@@ -198,22 +198,22 @@ def score_seq_model_cached(model_path, dataset_name, cache_dir, kind, batch_size
     rule = rule_scores_from_features(x_raw)
     fuse_rule = float(meta.get("fuse_rule", 1.0))
     gamma = float(meta.get("gamma", 0.2))
-    use_seq = bool(meta.get("use_seq", True))
-    if not use_seq:
-        return np.asarray(rule, dtype=np.float32)
 
     model.eval()
     out = []
     for start in range(0, len(x_raw), batch_size):
         end = min(start + batch_size, len(x_raw))
         x = normalize_features(np.asarray(x_raw[start:end], dtype=np.float32), mean, std).astype(np.float32)
-        scores = model(
+        residual = np.tanh(model(
             jt.array(seq_dst[start:end]),
             jt.array(seq_gap[start:end]),
             jt.array(cand_idx[start:end]),
             jt.array(x),
-        ).numpy()
-        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * gamma)
+        ).numpy())
+        if score_mode == "residual":
+            out.append(residual)
+        else:
+            out.append(rule[start:end] * fuse_rule + residual * gamma)
     return np.vstack(out)
 
 

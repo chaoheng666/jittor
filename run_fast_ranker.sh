@@ -9,7 +9,6 @@ VALID_MODE="${VALID_MODE:-test-prior}"
 VALID_DIR="${VALID_DIR:-${VALID_ROOT}_${VALID_MODE}}"
 CACHE_DIR="${CACHE_DIR:-feature_cache_fast}"
 MODEL_ROOT="${MODEL_ROOT:-fast_models}"
-SCORE_DIR="${SCORE_DIR:-fast_scores}"
 OUT_DIR="${OUT_DIR:-submission_fast}"
 ZIP_PATH="${ZIP_PATH:-result_fast.zip}"
 
@@ -28,20 +27,15 @@ MAX_COLD_POOL="${MAX_COLD_POOL:-3000000}"
 MLP_HIDDEN_DIM="${MLP_HIDDEN_DIM:-128}"
 MLP_WEIGHT="${MLP_WEIGHT:-0.2}"
 MLP_EPOCHS="${MLP_EPOCHS:-10}"
+HARD_NEGATIVES="${HARD_NEGATIVES:-30}"
 
 SEQ_LEN="${SEQ_LEN:-100}"
 SEQ_GAMMA="${SEQ_GAMMA:-0.25}"
 SEQ_HIDDEN_DIM="${SEQ_HIDDEN_DIM:-192}"
 SEQ_EPOCHS="${SEQ_EPOCHS:-10}"
 
-RUN_CRAFT="${RUN_CRAFT:-1}"
-CRAFT_NEIGHBORS="${CRAFT_NEIGHBORS:-50}"
-CRAFT_HIDDEN_SIZE="${CRAFT_HIDDEN_SIZE:-128}"
-CRAFT_EPOCHS="${CRAFT_EPOCHS:-6}"
-
 BATCH_SIZE="${BATCH_SIZE:-512}"
 SEQ_BATCH_SIZE="${SEQ_BATCH_SIZE:-256}"
-CRAFT_BATCH_SIZE="${CRAFT_BATCH_SIZE:-240}"
 FEATURE_WORKERS="${FEATURE_WORKERS:-48}"
 FEATURE_CHUNK_SIZE="${FEATURE_CHUNK_SIZE:-512}"
 GPU_COUNT="${GPU_COUNT:-8}"
@@ -142,7 +136,7 @@ if [ "$USE_CUDA" = "1" ]; then
   CUDA_ARG="--cuda"
 fi
 
-mkdir -p "$MODEL_ROOT" "$SCORE_DIR"
+mkdir -p "$MODEL_ROOT"
 
 echo "building validation: $VALID_DIR"
 "$PYTHON_BIN" scripts/valid_builder.py \
@@ -202,6 +196,7 @@ for dataset in $DATASETS; do
     --fuse-rule "$FUSE_RULE" \
     --mlp-weight "$MLP_WEIGHT" \
     --eval-ratio "$EVAL_RATIO" \
+    --hard-negatives "$HARD_NEGATIVES" \
     --max-rows "$MAX_VALID" \
     --seed "$SEED" \
     $CUDA_ARG
@@ -218,52 +213,18 @@ for dataset in $DATASETS; do
     --fuse-rule "$FUSE_RULE" \
     --gamma "$SEQ_GAMMA" \
     --eval-ratio "$EVAL_RATIO" \
+    --hard-negatives "$HARD_NEGATIVES" \
     --max-rows "$MAX_VALID" \
     --seed "$SEED" \
     $CUDA_ARG
 done
 wait
 
-CRAFT_AVAILABLE="$($PYTHON_BIN - <<'PY'
-try:
-    from jittor_geometric.data import TemporalData
-    from jittor_geometric.dataloader.temporal_dataloader import TemporalDataLoader, get_neighbor_sampler
-    from jittor_geometric.nn.models.craft import CRAFT
-except Exception:
-    print("0")
-else:
-    print("1")
-PY
-)"
-if [ "$RUN_CRAFT" = "1" ] && [ "$CRAFT_AVAILABLE" = "1" ]; then
-  echo "training one-parameter CRAFT models in parallel"
-  for dataset in $DATASETS; do
-    run_gpu_job "$PYTHON_BIN" scripts/train_craft_ranker.py \
-      --data-dir "$DATA_DIR" \
-      --valid-dir "$VALID_DIR" \
-      --dataset "$dataset" \
-      --model-dir "$MODEL_ROOT/craft" \
-      --score-dir "$SCORE_DIR" \
-      --run-name "craft_n${CRAFT_NEIGHBORS}_h${CRAFT_HIDDEN_SIZE}_s${SEED}" \
-      --epochs "$CRAFT_EPOCHS" \
-      --batch-size "$CRAFT_BATCH_SIZE" \
-      --num-neighbors "$CRAFT_NEIGHBORS" \
-      --hidden-size "$CRAFT_HIDDEN_SIZE" \
-      --max-rows "$MAX_VALID" \
-      --seed "$SEED" \
-      $CUDA_ARG
-  done
-  wait
-elif [ "$RUN_CRAFT" = "1" ]; then
-  echo "skip CRAFT: jittor_geometric CRAFT import failed"
-fi
-
 echo "searching cached ensemble weights"
 "$PYTHON_BIN" scripts/search_ensemble.py \
   --valid-dir "$VALID_DIR" \
   --cache-dir "$CACHE_DIR" \
   --model-root "$MODEL_ROOT" \
-  --score-dir "$SCORE_DIR" \
   --out "$MODEL_ROOT/ensemble_weights.json" \
   --max-rows "$MAX_VALID"
 

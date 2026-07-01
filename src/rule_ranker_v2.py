@@ -95,6 +95,13 @@ class RuleRankerV2:
     def fit(self, train_edges):
         edges = list(train_edges)
         self.features.fit(edges)
+        self._refresh_auto_weights()
+
+    def use_feature_builder(self, feature_builder):
+        self.features = feature_builder
+        self._refresh_auto_weights()
+
+    def _refresh_auto_weights(self):
         if not self._explicit_weights and not self.weights:
             self.weights = dict(self._auto_weights())
 
@@ -106,6 +113,9 @@ class RuleRankerV2:
 
     def score(self, src, time, dst):
         feats = self.features.features(src, time, dst)
+        return self.score_from_features(feats)
+
+    def score_from_features(self, feats):
         score = 0.0
         for name, weight in self.weights.items():
             score += weight * feats.get(name, 0.0)
