@@ -206,6 +206,7 @@ def build_dataset_cache(args, dataset_dir):
 
     _FEATURE_BUILDER = CandidateFeatureBuilder(dataset_name)
     _FEATURE_BUILDER.fit(valid_train_edges)
+    _FEATURE_BUILDER.fit_candidate_priors(iter_test_rows(dataset_dir / "test.csv"))
 
     _SEQ_LENS = seq_lens
     _SEQ_BUILDERS = {}
@@ -235,6 +236,7 @@ def build_dataset_cache(args, dataset_dir):
 
     _FEATURE_BUILDER = CandidateFeatureBuilder(dataset_name)
     _FEATURE_BUILDER.fit(full_train_edges)
+    _FEATURE_BUILDER.fit_candidate_priors(iter_test_rows(dataset_dir / "test.csv"))
     _SEQ_BUILDERS = {}
     for seq_len in seq_lens:
         builder = SequenceFeatureBuilder(seq_len)
@@ -270,12 +272,33 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data_A")
     parser.add_argument("--valid-dir", default="validation")
+    parser.add_argument("--fold-root", default="", help="Build one cache under cache-dir for each fold directory.")
     parser.add_argument("--cache-dir", default="feature_cache")
     parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--seq-lens", default="50")
     parser.add_argument("--workers", type=int, default=48)
     parser.add_argument("--chunk-size", type=int, default=256)
     args = parser.parse_args()
+
+    if args.fold_root:
+        fold_root = Path(args.fold_root)
+        folds = sorted(p for p in fold_root.iterdir() if p.is_dir())
+        if not folds:
+            raise ValueError(f"no fold dirs found in {fold_root}")
+        for fold_dir in folds:
+            fold_args = argparse.Namespace(**vars(args))
+            fold_args.valid_dir = str(fold_dir)
+            fold_args.cache_dir = str(Path(args.cache_dir) / fold_dir.name)
+            if fold_args.dataset == "all":
+                dataset_dirs = find_dataset_dirs(args.data_dir, fold_args.valid_dir)
+            else:
+                names = [name.strip() for name in fold_args.dataset.split(",") if name.strip()]
+                dataset_dirs = [Path(args.data_dir) / name for name in names]
+            if not dataset_dirs:
+                raise ValueError(f"no dataset dirs found for fold {fold_dir}")
+            for dataset_dir in dataset_dirs:
+                build_dataset_cache(fold_args, dataset_dir)
+        return
 
     if args.dataset == "all":
         dataset_dirs = find_dataset_dirs(args.data_dir, args.valid_dir)

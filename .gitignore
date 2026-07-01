@@ -13,6 +13,7 @@ data_A/
 downloads/
 validation/
 validation_*/
+rank_folds*/
 submission/
 submission_*/
 models/
@@ -21,3 +22,4 @@ competition_scores/
 feature_cache*/
 fast_models*/
 fast_scores*/
+ablation_summary.csv

@@ -94,6 +94,25 @@ def hard_candidate_mask(rule_scores, labels, hard_negatives):
     return mask
 
 
+def bpr_hard_loss(logits, rule_scores, labels, hard_negatives):
+    if hard_negatives <= 0:
+        return None
+    diffs = []
+    for row_idx, label in enumerate(labels):
+        label = int(label)
+        row = np.asarray(rule_scores[row_idx], dtype=np.float32).copy()
+        row[label] = -np.inf
+        count = min(hard_negatives, row.shape[0] - 1)
+        hard_idx = np.argpartition(row, -count)[-count:]
+        pos = logits[row_idx, label]
+        for neg in hard_idx:
+            diffs.append(pos - logits[row_idx, int(neg)])
+    if not diffs:
+        return None
+    diff = jt.stack(diffs)
+    return -jt.log(jt.sigmoid(diff) + 1e-8).mean()
+
+
 def evaluate(model, x_raw, y, mean, std, fuse_rule, mlp_weight):
     rr_rule = 0.0
     rr_mlp = 0.0
@@ -161,6 +180,10 @@ def train_one_dataset(args, dataset_name):
                 )
                 logits = logits + (jt.array(mask) - 1.0) * 10000.0
             loss = nn.cross_entropy_loss(logits, by)
+            if args.bpr_weight > 0:
+                bpr = bpr_hard_loss(scores, bx_raw[:, :, FEATURE_NAMES.index("rule_score")], y[batch_idx], args.hard_negatives)
+                if bpr is not None:
+                    loss = loss + bpr * args.bpr_weight
             optimizer.step(loss)
             loss_sum += float(loss.numpy())
             steps += 1
@@ -184,6 +207,7 @@ def train_one_dataset(args, dataset_name):
                 "fuse_rule": float(args.fuse_rule),
                 "mlp_weight": float(args.mlp_weight),
                 "hard_negatives": int(args.hard_negatives),
+                "bpr_weight": float(args.bpr_weight),
                 "use_mlp": True,
             })
     print(f"{dataset_name}: saved {best_path} best_fused_mrr={best_mrr:.8f}")
@@ -213,6 +237,7 @@ def main():
     parser.add_argument("--mlp-weight", type=float, default=0.2)
     parser.add_argument("--eval-ratio", type=float, default=0.2)
     parser.add_argument("--hard-negatives", type=int, default=30)
+    parser.add_argument("--bpr-weight", type=float, default=0.1)
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--seed-list", default="")

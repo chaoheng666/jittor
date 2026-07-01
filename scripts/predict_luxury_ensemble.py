@@ -38,6 +38,22 @@ def score_component(component, dataset_name, train_edges, queries, cache_dir="")
             return score_seq_model_cached(
                 component["path"], dataset_name, cache_dir, "test", score_mode=component.get("score_mode", "fused")
             )
+        if ctype == "lgbm":
+            path = Path(component.get("test_path", ""))
+            if not path.exists():
+                valid_path = Path(component["path"])
+                path = valid_path.with_name(valid_path.name.replace("_valid.npy", "_test.npy"))
+            if not path.exists():
+                raise FileNotFoundError(f"missing LightGBM test score cache: {path}")
+            return np.load(path, mmap_mode="r")
+        if ctype == "tgnn":
+            path = Path(component.get("test_path", ""))
+            if not path.exists():
+                valid_path = Path(component["path"])
+                path = valid_path.with_name(valid_path.name.replace("_valid.npy", "_test.npy"))
+            if not path.exists():
+                raise FileNotFoundError(f"missing TGNN test score cache: {path}")
+            return np.load(path, mmap_mode="r")
     if ctype == "rule":
         return score_rule(dataset_name, train_edges, queries)
     if ctype == "mlp":
@@ -48,6 +64,22 @@ def score_component(component, dataset_name, train_edges, queries, cache_dir="")
         return score_seq_model(
             component["path"], dataset_name, train_edges, queries, score_mode=component.get("score_mode", "fused")
         )
+    if ctype == "lgbm":
+        path = Path(component.get("test_path", ""))
+        if not path.exists():
+            valid_path = Path(component["path"])
+            path = valid_path.with_name(valid_path.name.replace("_valid.npy", "_test.npy"))
+        if not path.exists():
+            raise FileNotFoundError(f"missing LightGBM test score cache: {path}")
+        return np.load(path, mmap_mode="r")
+    if ctype == "tgnn":
+        path = Path(component.get("test_path", ""))
+        if not path.exists():
+            valid_path = Path(component["path"])
+            path = valid_path.with_name(valid_path.name.replace("_valid.npy", "_test.npy"))
+        if not path.exists():
+            raise FileNotFoundError(f"missing TGNN test score cache: {path}")
+        return np.load(path, mmap_mode="r")
     raise ValueError(f"unknown component type: {ctype}")
 
 

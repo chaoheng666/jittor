@@ -24,7 +24,27 @@ from src.luxury_scoring import (
 
 def discover_components(dataset_name, model_root, score_dir):
     model_root = Path(model_root)
+    score_dir = Path(score_dir)
     components = []
+    if score_dir.exists():
+        for path in sorted(score_dir.glob(f"{dataset_name}_lgbm_*_valid.npy")):
+            name = path.name.removeprefix(f"{dataset_name}_").removesuffix("_valid.npy")
+            test_path = score_dir / f"{dataset_name}_{name}_test.npy"
+            components.append({
+                "name": name,
+                "type": "lgbm",
+                "path": str(path),
+                "test_path": str(test_path),
+            })
+        for path in sorted(score_dir.glob(f"{dataset_name}_tgnn_valid.npy")):
+            name = path.name.removeprefix(f"{dataset_name}_").removesuffix("_valid.npy")
+            test_path = score_dir / f"{dataset_name}_{name}_test.npy"
+            components.append({
+                "name": name,
+                "type": "tgnn",
+                "path": str(path),
+                "test_path": str(test_path),
+            })
     for path in sorted(model_root.rglob(f"{dataset_name}_jt_ranker.pkl")):
         name = path.parent.relative_to(model_root).as_posix()
         components.append({"name": f"{name}:residual", "type": "mlp", "path": str(path), "score_mode": "residual"})
@@ -50,6 +70,12 @@ def component_scores(component, dataset_name, dataset_dir, train_edges, queries,
                 component["path"], dataset_name, cache_dir, "valid", score_mode=component.get("score_mode", "fused")
             )
             return scores[:max_rows] if max_rows else scores
+        if ctype == "lgbm":
+            scores = np.load(component["path"], mmap_mode="r")
+            return scores[:max_rows] if max_rows else scores
+        if ctype == "tgnn":
+            scores = np.load(component["path"], mmap_mode="r")
+            return scores[:max_rows] if max_rows else scores
     if ctype == "rule":
         return score_rule(dataset_name, train_edges, queries)
     if ctype == "mlp":
@@ -60,6 +86,12 @@ def component_scores(component, dataset_name, dataset_dir, train_edges, queries,
         return score_seq_model(
             component["path"], dataset_name, train_edges, queries, score_mode=component.get("score_mode", "fused")
         )
+    if ctype == "lgbm":
+        scores = np.load(component["path"], mmap_mode="r")
+        return scores[:max_rows] if max_rows else scores
+    if ctype == "tgnn":
+        scores = np.load(component["path"], mmap_mode="r")
+        return scores[:max_rows] if max_rows else scores
     raise ValueError(f"unknown component type: {ctype}")
 
 

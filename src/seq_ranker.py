@@ -94,6 +94,7 @@ class SeqResidualRanker(nn.Module):
     ):
         super().__init__()
         self.seq_len = seq_len
+        self.hidden_dim = hidden_dim
         self.dst_emb = nn.Embedding(n_dst, dst_emb_dim)
         self.time_emb = nn.Embedding(max_time_bucket + 1, time_emb_dim)
         seq_dim = dst_emb_dim + time_emb_dim
@@ -112,8 +113,11 @@ class SeqResidualRanker(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
         self.cand_proj = nn.Linear(dst_emb_dim + feature_dim, hidden_dim)
+        self.query_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.key_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.value_proj = nn.Linear(hidden_dim, hidden_dim)
         self.out = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(hidden_dim * 4 + 1, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
@@ -130,7 +134,17 @@ class SeqResidualRanker(nn.Module):
         cand_emb = self.dst_emb(cand_idx)
         cand = self.cand_proj(jt.cat([cand_emb, cand_features], dim=-1))
         pooled = pooled.unsqueeze(1) + jt.zeros_like(cand)
-        return self.out(jt.cat([pooled, cand], dim=-1)).squeeze(-1)
+
+        q = self.query_proj(cand)
+        k = self.key_proj(seq)
+        v = self.value_proj(seq)
+        attn_score = (q.unsqueeze(2) * k.unsqueeze(1)).sum(dim=-1) / math.sqrt(float(self.hidden_dim))
+        attn_score = attn_score + (mask.unsqueeze(1) - 1.0) * 10000.0
+        attn = nn.softmax(attn_score, dim=2)
+        context = (attn.unsqueeze(-1) * v.unsqueeze(1)).sum(dim=2)
+        dot = (cand * pooled).sum(dim=-1).unsqueeze(-1) / math.sqrt(float(self.hidden_dim))
+
+        return self.out(jt.cat([pooled, cand, context, cand * context, dot], dim=-1)).squeeze(-1)
 
 
 def save_seq_model(path, model, meta):
