@@ -3,30 +3,29 @@ from collections import Counter, defaultdict, deque
 
 
 class FeatureBuilder:
-    """Time-aware features for future-edge intensity scoring.
+    """Streaming temporal graph features for candidate reranking.
 
-    The two public A-list scenes behave very differently:
-    - dataset1 has many repeated edges, so pair memory is very strong.
-    - dataset2 is bipartite and the official split contains new source-dst
-      links, so item-to-item dynamics and destination freshness matter more.
-
-    This builder keeps repeat-pair hazard, source sequence transition, and
-    destination prior signals. The rule/model layer decides how to weight them
-    per dataset.
+    The builder intentionally keeps all features graph-internal.  It supports
+    the three signals used by the final scorer:
+    - repeat/memory hazard for seen-heavy scenes;
+    - source sequence transition and destination prior for new-link scenes;
+    - TNCN-lite structural hints derived from recent temporal neighborhoods.
     """
 
     def __init__(
         self,
-        recent_limit=100,
+        recent_limit=120,
         cooc_window=8,
         cooc_recent_limit=300,
-        cooc_topk=300,
+        cooc_topk=400,
     ):
         self.recent_limit = recent_limit
         self.cooc_window = cooc_window
         self.cooc_recent_limit = cooc_recent_limit
         self.cooc_topk = cooc_topk
+        self._reset()
 
+    def _reset(self):
         self.pair_count = Counter()
         self.pair_recent_count = Counter()
         self.pair_last_time = {}
@@ -41,7 +40,8 @@ class FeatureBuilder:
         self.src_unique_dst_count = Counter()
         self.src_repeat_rate = defaultdict(float)
         self.src_last_dst = {}
-        self.src_recent = defaultdict(lambda: deque(maxlen=recent_limit))
+        self.src_recent = defaultdict(lambda: deque(maxlen=self.recent_limit))
+        self.src_recent_times = defaultdict(lambda: deque(maxlen=self.recent_limit))
         self.src_recent_5 = {}
         self.src_recent_10 = {}
         self.src_recent_20 = {}
@@ -52,6 +52,9 @@ class FeatureBuilder:
         self.reverse_transition = defaultdict(Counter)
         self.cooc_transition = defaultdict(Counter)
         self.reverse_cooc_transition = defaultdict(Counter)
+        self.src_dst_sets = defaultdict(set)
+        self.dst_src_sets = defaultdict(set)
+        self.node_neighbors = defaultdict(set)
         self.min_time = 0
         self.max_time = 0
         self.recent_start = 0
@@ -62,6 +65,7 @@ class FeatureBuilder:
         self.is_bipartite_like = False
 
     def fit(self, train_edges):
+        self._reset()
         edges = sorted(train_edges, key=lambda x: x[2])
         if not edges:
             return
@@ -72,8 +76,7 @@ class FeatureBuilder:
         self.recent_start = self.max_time - span // 5
         self.recent_start_10 = self.max_time - span // 10
         self.recent_start_05 = self.max_time - span // 20
-        src_dst_sets = defaultdict(set)
-        dst_src_sets = defaultdict(set)
+
         by_src = defaultdict(list)
         src_values = set()
         dst_values = set()
@@ -85,8 +88,10 @@ class FeatureBuilder:
             self.dst_count[dst] += 1
             self.dst_last_time[dst] = time
             self.src_count[src] += 1
-            src_dst_sets[src].add(dst)
-            dst_src_sets[dst].add(src)
+            self.src_dst_sets[src].add(dst)
+            self.dst_src_sets[dst].add(src)
+            self.node_neighbors[src].add(dst)
+            self.node_neighbors[dst].add(src)
             by_src[src].append((time, dst))
             src_values.add(src)
             dst_values.add(dst)
@@ -112,6 +117,7 @@ class FeatureBuilder:
             for idx, (time, dst) in enumerate(rows):
                 self.src_last_dst[src] = dst
                 self.src_recent[src].append(dst)
+                self.src_recent_times[src].append(time)
                 if idx > 0:
                     prev_time, prev_dst = rows[idx - 1]
                     gaps.append(max(time - prev_time, 0))
@@ -126,13 +132,13 @@ class FeatureBuilder:
         self._prune_nested_counter(self.cooc_transition, self.cooc_topk)
         self._prune_nested_counter(self.reverse_cooc_transition, self.cooc_topk)
 
-        for src, dsts in src_dst_sets.items():
+        for src, dsts in self.src_dst_sets.items():
             unique_count = len(dsts)
             self.src_unique_dst_count[src] = unique_count
             total_count = self.src_count[src]
             if total_count:
                 self.src_repeat_rate[src] = 1.0 - unique_count / total_count
-        for dst, srcs in dst_src_sets.items():
+        for dst, srcs in self.dst_src_sets.items():
             self.dst_unique_src_count[dst] = len(srcs)
 
         for src, recent in self.src_recent.items():
@@ -192,7 +198,12 @@ class FeatureBuilder:
         reverse_cooc_score = 0.0
         transition_hits = 0
         cooc_hits = 0
+        temporal_cn = 0.0
+        temporal_aa = 0.0
+        temporal_ra = 0.0
+        recent_cn = 0.0
 
+        dst_degree = max(self.dst_count[dst], 1)
         for rank, hist_dst in enumerate(reversed(recent), start=1):
             discount = 1.0 / (rank ** 0.7)
             if hist_dst == dst:
@@ -201,22 +212,27 @@ class FeatureBuilder:
                     recent_rank_score = 1.0 / rank
 
             trans_value = self.transition[hist_dst][dst]
+            rev_trans_value = self.reverse_transition[hist_dst][dst]
+            cooc_value = self.cooc_transition[hist_dst][dst]
+            reverse_cooc_value = self.reverse_cooc_transition[hist_dst][dst]
+            combined = trans_value + rev_trans_value + cooc_value + reverse_cooc_value
+
             if trans_value:
                 transition_hits += 1
                 transition_score += math.log1p(trans_value) * discount
-
-            rev_trans_value = self.reverse_transition[hist_dst][dst]
             if rev_trans_value:
                 reverse_transition_score += math.log1p(rev_trans_value) * discount
-
-            cooc_value = self.cooc_transition[hist_dst][dst]
             if cooc_value:
                 cooc_hits += 1
                 cooc_score += math.log1p(cooc_value) * discount
-
-            reverse_cooc_value = self.reverse_cooc_transition[hist_dst][dst]
             if reverse_cooc_value:
                 reverse_cooc_score += math.log1p(reverse_cooc_value) * discount
+            if combined:
+                recent_cn += 1.0 / rank
+                temporal_cn += math.log1p(combined) * discount
+                hist_degree = max(self.dst_count[hist_dst], 1)
+                temporal_aa += combined / max(math.log1p(hist_degree + dst_degree), 1.0) * discount
+                temporal_ra += combined / max(hist_degree + dst_degree, 1) * discount
 
         return {
             "recent_decay_count": same_decay,
@@ -227,12 +243,38 @@ class FeatureBuilder:
             "reverse_recent_cooc_score": reverse_cooc_score,
             "recent_transition_hits": math.log1p(transition_hits),
             "recent_cooc_hits": math.log1p(cooc_hits),
+            "temporal_cn": temporal_cn,
+            "temporal_aa": temporal_aa,
+            "temporal_ra": temporal_ra,
+            "recent_cn": recent_cn,
+            "two_hop_overlap": math.log1p(transition_hits + cooc_hits),
+            "shared_recent_neighbor": 1.0 if transition_hits or cooc_hits else 0.0,
         }
+
+    def _small_common_neighbor_features(self, src, dst, max_scan=512):
+        if self.is_bipartite_like:
+            return 0.0, 0.0, 0.0
+        left = self.node_neighbors.get(src, ())
+        right = self.node_neighbors.get(dst, ())
+        if not left or not right:
+            return 0.0, 0.0, 0.0
+        small, large = (left, right) if len(left) <= len(right) else (right, left)
+        if len(small) > max_scan:
+            return 0.0, 0.0, 0.0
+        cn = 0
+        aa = 0.0
+        ra = 0.0
+        for node in small:
+            if node in large:
+                cn += 1
+                degree = max(len(self.node_neighbors.get(node, ())), 1)
+                aa += 1.0 / max(math.log1p(degree), 1.0)
+                ra += 1.0 / degree
+        return math.log1p(cn), aa, ra
 
     def features(self, src, time, dst):
         pair = (src, dst)
         recent = list(self.src_recent.get(src, ()))
-        recent_20 = recent[-20:]
         dst_count = self.dst_count[dst]
         dst_old = self.dst_old_count[dst]
         dst_recent = self.dst_recent_count[dst]
@@ -246,6 +288,9 @@ class FeatureBuilder:
         last_transition = self.transition[last_dst][dst] if last_dst is not None else 0
         last_reverse_transition = self.reverse_transition[last_dst][dst] if last_dst is not None else 0
         last_cooc = self.cooc_transition[last_dst][dst] if last_dst is not None else 0
+        static_cn, static_aa, static_ra = self._small_common_neighbor_features(src, dst)
+        src_degree = max(len(self.node_neighbors.get(src, ())), 0)
+        dst_degree = max(len(self.node_neighbors.get(dst, ())), 0)
 
         feats = {
             "bias": 1.0,
@@ -288,7 +333,58 @@ class FeatureBuilder:
             "recent_cooc_score": seq_scores["recent_cooc_score"],
             "reverse_recent_cooc_score": seq_scores["reverse_recent_cooc_score"],
             "recent_cooc_hits": seq_scores["recent_cooc_hits"],
+            "temporal_cn": seq_scores["temporal_cn"],
+            "recent_cn": seq_scores["recent_cn"],
+            "temporal_aa": seq_scores["temporal_aa"] + static_aa,
+            "temporal_ra": seq_scores["temporal_ra"] + static_ra,
+            "preferential_attachment": math.log1p(src_degree) * math.log1p(dst_degree),
+            "two_hop_overlap": seq_scores["two_hop_overlap"],
+            "shared_recent_neighbor": seq_scores["shared_recent_neighbor"],
+            "static_common_neighbors": static_cn,
         }
-        # Backward-compatible alias used by older model metadata.
         feats["item_transition"] = feats["last_transition"]
         return feats
+
+    def query_features(self, src, time, candidates):
+        candidates = list(candidates)
+        if not candidates:
+            candidates = [0]
+        history = list(self.src_recent.get(src, ()))
+        hits = sum(1 for dst in candidates if self.pair_count[(src, dst)] > 0)
+        cold = sum(1 for dst in candidates if self.dst_count[dst] == 0)
+        popularities = [math.log1p(self.dst_count[dst]) for dst in candidates]
+        recent_pops = [math.log1p(self.dst_recent_count[dst]) for dst in candidates]
+        unique_recent = len(set(history[-20:]))
+        return {
+            "query_bias": 1.0,
+            "query_src_activity": math.log1p(self.src_count[src]),
+            "query_src_unique_dst": math.log1p(self.src_unique_dst_count[src]),
+            "query_src_repeat_rate": self.src_repeat_rate[src],
+            "query_recent_unique_20": math.log1p(unique_recent),
+            "query_candidate_pair_hit_ratio": hits / len(candidates),
+            "query_candidate_cold_ratio": cold / len(candidates),
+            "query_candidate_avg_popularity": sum(popularities) / len(popularities),
+            "query_candidate_avg_recent_popularity": sum(recent_pops) / len(recent_pops),
+            "query_repeat_edge_fraction": self.repeat_edge_fraction,
+            "query_is_bipartite_like": 1.0 if self.is_bipartite_like else 0.0,
+            "query_time_after_train": max(time - self.max_time, 0) / max(self.max_time - self.min_time, 1),
+        }
+
+    def history_arrays(self, src, time, node_to_idx, history_len):
+        dsts = list(self.src_recent.get(src, ()))
+        times = list(self.src_recent_times.get(src, ()))
+        rows = [(dst, ts) for dst, ts in zip(dsts, times) if ts < time]
+        rows = rows[-history_len:]
+        rows.reverse()
+
+        pad_idx = node_to_idx.get("__PAD__", 0)
+        unk_idx = node_to_idx.get("__UNK__", 1)
+        ids = [pad_idx] * history_len
+        deltas = [0.0] * history_len
+        mask = [0.0] * history_len
+        span = max(self.max_time - self.min_time, 1)
+        for i, (dst, ts) in enumerate(rows):
+            ids[i] = node_to_idx.get(dst, unk_idx)
+            deltas[i] = math.log1p(max(time - ts, 0) / span)
+            mask[i] = 1.0
+        return ids, deltas, mask

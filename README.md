@@ -1,19 +1,14 @@
-# Jittor Future-Edge Intensity Ranker
+# Jittor CRAFT-Rerank
 
-This repository predicts the strength of future temporal edges and ranks the
-100 official candidates for each `(src, time)` test row.
+本项目用于赛道一动态推荐任务：对官方测试集中每个 `(src, time)` 的 100 个候选 `dst` 做未来交互概率排序，并输出提交 zip。
 
-The current pipeline no longer builds a synthetic validation candidate set. It
-learns from real future edges with hard negatives, selects the best model by
-future-edge pairwise accuracy, and then scores the official candidates.
-
-## Run
+项目保留一个 shell 训练入口：
 
 ```bash
 bash run_best.sh
 ```
 
-Default output:
+默认输出：
 
 ```text
 result_best.zip
@@ -21,44 +16,52 @@ result_best.zip
   dataset2.csv
 ```
 
-## Pipeline
+## 方法
 
-1. Check or download `data_A`.
-2. Train edge-intensity MLP sweeps from real temporal edges.
-3. Select the best model per dataset using future-edge pairwise accuracy.
-4. Score the 100 official candidates for each test row.
-5. Softmax each row and pack `result_best.zip`.
+当前方案是 CRAFT 风格候选重排器，而不是点式边分类器：
 
-## Common Overrides
+- 候选 `dst` embedding 对 `src` 最近历史序列做 candidate-to-history cross-attention。
+- 显式加入 repeat/memory、source transition/cooc、destination prior。
+- 加入 TNCN-lite 结构特征：temporal CN、recent CN、AA、RA、PA、2-hop overlap。
+- 使用 query-aware gate 融合 CRAFT、repeat、structure、rule 四个分支。
+- 训练目标是 `1 positive + K hard negatives` 的 listwise softmax，辅以 pairwise ranking loss。
+- 模型选择按验证 MRR，并拆分 seen/unseen MRR；如果神经模型没有稳定超过规则基线，则自动回退 rule-only。
 
-- `EDGE_HIDDEN_DIMS=64,128,256`: MLP hidden-size sweep.
-- `EDGE_GAMMAS=0.05,0.08,0.15,0.25,0.35`: residual strength sweep.
-- `EDGE_SEEDS=2026,2027`: training seeds.
-- `EDGE_NEGATIVES=10`: hard negatives per real future edge.
-- `EDGE_SAMPLE_EDGES=250000`: cap supervision edges per dataset per model; set `0` for all.
-- `MIN_FUTURE_GAIN=0.0005`: minimum gain over rule-only before selecting an MLP.
-- `USE_CUDA=0`: run on CPU.
-- `USE_VENV=0`: use the current Python environment.
+## 常用运行
 
-Fast local probe:
+8 卡正式跑：
 
 ```bash
-USE_CUDA=0 USE_VENV=0 MAX_PARALLEL=1 GPU_COUNT=1 \
-EDGE_HIDDEN_DIMS=8 EDGE_GAMMAS=0.05 EDGE_SEEDS=2026 \
-EDGE_EPOCHS=1 EDGE_NEGATIVES=2 EDGE_SAMPLE_EDGES=2000 \
-bash run_best.sh
+PRESET=final GPU_COUNT=8 MAX_PARALLEL=8 USE_CUDA=1 bash run_best.sh
 ```
 
-Quick submission check:
+CPU 冒烟测试：
 
 ```bash
-python - <<'PY'
-import csv, zipfile
-with zipfile.ZipFile("result_best.zip") as zf:
-    for name in sorted(zf.namelist()):
-        with zf.open(name) as f:
-            row = next(csv.reader(line.decode("utf-8") for line in f))
-        vals = [float(x) for x in row]
-        print(name, len(vals), min(vals), max(vals), sum(vals))
-PY
+PRESET=quick USE_CUDA=0 USE_VENV=0 bash run_best.sh
 ```
+
+只跑某个数据集：
+
+```bash
+DATASET=dataset2 bash run_best.sh
+```
+
+## 关键参数
+
+- `CRAFT_CONFIGS`：模型搜索配置，格式为 `hidden:embed:history_len:lr:negatives`，多个配置用逗号分隔。
+- `CRAFT_SEEDS`：训练 seed 列表。
+- `CRAFT_EPOCHS`：每个配置训练轮数。
+- `CRAFT_SAMPLE_EDGES`：每个配置最多采样多少真实未来边；`0` 表示使用全部监督边。
+- `BATCH_SIZE`：Jittor batch size。
+- `MIN_VALIDATION_GAIN`：神经模型相对规则 MRR 的最低提升门槛。
+
+## 文件职责
+
+- `run_best.sh`：唯一 shell 训练入口，负责环境、并行训练、选择、预测和 zip 检查。
+- `scripts/train_edge_ranker.py`：训练 CRAFT-Rerank listwise 模型。
+- `scripts/select_edge_model.py`：按验证 MRR 选择模型，并在 eval cache 对齐时尝试 top-2 融合。
+- `scripts/predict_edge_intensity.py`：对官方 100 候选打分并生成提交。
+- `src/feature_builder.py`：动态图缓存、repeat/transition/prior/structure/query 特征。
+- `src/jt_ranker.py`：候选特征构造、CRAFT-Rerank 模型、保存加载。
+- `src/rule_ranker_v2.py`：规则基线和低收益回退。

@@ -43,7 +43,7 @@ def write_dataset(dataset_dir, dataset_config, output_path):
         print(f"{dataset_name}: loaded {component['name']} type={component['type']}")
 
     if total is None:
-        raise ValueError(f"{dataset_name}: no edge-intensity components selected")
+        raise ValueError(f"{dataset_name}: no rerank components selected")
 
     probs = softmax(total)
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -62,14 +62,14 @@ def make_zip(output_dir, zip_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data_A")
-    parser.add_argument("--config", default="competition_models_best/edge_intensity_config.json")
+    parser.add_argument("--config", default="competition_models_best/craft_rerank_config.json")
     parser.add_argument("--out-dir", default="submission_best")
     parser.add_argument("--zip", default="result_best.zip")
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
         config = json.load(f)
-    if config.get("mode") != "edge_intensity":
+    if config.get("mode") not in {"edge_intensity", "craft_rerank"}:
         raise ValueError(f"unexpected config mode: {config.get('mode')}")
 
     out_dir = Path(args.out_dir)
@@ -78,7 +78,7 @@ def main():
         dataset_name = dataset_dir.name
         dataset_config = config["datasets"].get(dataset_name)
         if not dataset_config:
-            print(f"skip {dataset_name}: no edge-intensity config")
+            print(f"skip {dataset_name}: no rerank config")
             continue
         rows = write_dataset(dataset_dir, dataset_config, out_dir / f"{dataset_name}.csv")
         print(f"{dataset_name}: wrote {rows} rows")
