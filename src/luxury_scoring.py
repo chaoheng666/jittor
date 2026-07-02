@@ -2,11 +2,21 @@ import csv
 from pathlib import Path
 
 import numpy as np
-import jittor as jt
 
 from .data_loader import iter_test_rows, iter_train_edges
-from .jt_ranker import CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features
-from .seq_ranker import SequenceFeatureBuilder, load_seq_model
+from .rule_ranker_v2 import RuleRankerV2
+
+
+def load_jittor():
+    import jittor as jt
+
+    return jt
+
+
+def load_jt_ranker_parts():
+    from .jt_ranker import CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features
+
+    return CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features
 
 
 def iter_valid_rows(path):
@@ -67,90 +77,45 @@ def softmax(scores):
     return exp_scores / total
 
 
-def build_feature_array(dataset_name, train_edges, queries):
-    builder = CandidateFeatureBuilder(dataset_name)
-    builder.fit(train_edges)
-    rows = [builder.matrix(src, time, candidates) for src, time, candidates in queries]
+def score_rule(dataset_name, train_edges, queries):
+    ranker = RuleRankerV2(dataset_name)
+    ranker.fit(train_edges)
+    rows = [ranker.score_many(src, time, candidates) for src, time, candidates in queries]
     return np.asarray(rows, dtype=np.float32)
 
 
-def rule_scores_from_features(x_raw):
-    rule_idx = FEATURE_NAMES.index("rule_score")
-    return x_raw[:, :, rule_idx]
-
-
-def score_rule(dataset_name, train_edges, queries):
-    return rule_scores_from_features(build_feature_array(dataset_name, train_edges, queries))
-
-
-def score_mlp_model(model_path, dataset_name, train_edges, queries, batch_size=512):
+def score_edge_mlp_model(model_path, dataset_name, train_edges, queries, batch_size=512):
+    jt = load_jittor()
+    CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features = load_jt_ranker_parts()
     model, meta = load_model(model_path)
-    x_raw = build_feature_array(dataset_name, train_edges, queries)
-    mean = np.asarray(meta["mean"], dtype=np.float32)
-    std = np.asarray(meta["std"], dtype=np.float32)
-    fuse_rule = float(meta.get("fuse_rule", 1.0))
-    mlp_weight = float(meta.get("mlp_weight", 1.0))
-    use_mlp = bool(meta.get("use_mlp", True))
-    rule = rule_scores_from_features(x_raw)
-    if not use_mlp:
-        return rule
-
-    x = normalize_features(x_raw, mean, std).astype(np.float32)
-    model.eval()
-    out = []
-    for start in range(0, len(x), batch_size):
-        end = min(start + batch_size, len(x))
-        scores = model(jt.array(x[start:end])).numpy()
-        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * mlp_weight)
-    return np.vstack(out)
-
-
-def score_seq_model(model_path, dataset_name, train_edges, queries, batch_size=256):
-    model, meta = load_seq_model(model_path)
-    feature_builder = CandidateFeatureBuilder(dataset_name)
-    feature_builder.fit(train_edges)
-
-    seq_builder = SequenceFeatureBuilder(meta.get("seq_len", 50))
-    seq_builder.load_dst_values(meta["dst_values"])
-    seq_builder.fit_history(train_edges)
-
-    x_rows = []
-    seq_dst = []
-    seq_gap = []
-    cand_idx = []
-    for src, time, candidates in queries:
-        sdst, sgap, cidx = seq_builder.build_query(src, time, candidates)
-        x_rows.append(feature_builder.matrix(src, time, candidates))
-        seq_dst.append(sdst)
-        seq_gap.append(sgap)
-        cand_idx.append(cidx)
-
-    x_raw = np.asarray(x_rows, dtype=np.float32)
-    seq_dst = np.asarray(seq_dst, dtype=np.int32)
-    seq_gap = np.asarray(seq_gap, dtype=np.int32)
-    cand_idx = np.asarray(cand_idx, dtype=np.int32)
+    builder = CandidateFeatureBuilder(dataset_name)
+    builder.fit(train_edges)
 
     mean = np.asarray(meta["mean"], dtype=np.float32)
     std = np.asarray(meta["std"], dtype=np.float32)
-    x = normalize_features(x_raw, mean, std).astype(np.float32)
-    rule = rule_scores_from_features(x_raw)
     fuse_rule = float(meta.get("fuse_rule", 1.0))
-    gamma = float(meta.get("gamma", 0.2))
-    use_seq = bool(meta.get("use_seq", True))
-    if not use_seq:
-        return rule
+    gamma = float(meta.get("gamma", 0.15))
+    use_edge_mlp = bool(meta.get("use_edge_mlp", True))
+    rule_idx = FEATURE_NAMES.index("rule_score")
 
     model.eval()
     out = []
-    for start in range(0, len(x), batch_size):
-        end = min(start + batch_size, len(x))
-        scores = model(
-            jt.array(seq_dst[start:end]),
-            jt.array(seq_gap[start:end]),
-            jt.array(cand_idx[start:end]),
-            jt.array(x[start:end]),
-        ).numpy()
-        out.append(rule[start:end] * fuse_rule + np.tanh(scores) * gamma)
+    for start in range(0, len(queries), batch_size):
+        chunk = queries[start:start + batch_size]
+        x_raw = np.asarray(
+            [
+                [builder.vector(src, time, dst) for dst in candidates]
+                for src, time, candidates in chunk
+            ],
+            dtype=np.float32,
+        )
+        rule = x_raw[:, :, rule_idx]
+        if not use_edge_mlp:
+            out.append(rule)
+            continue
+        x = normalize_features(x_raw, mean, std).astype(np.float32)
+        scores = model(jt.array(x)).numpy()
+        out.append(rule * fuse_rule + np.tanh(scores) * gamma)
     return np.vstack(out)
 
 

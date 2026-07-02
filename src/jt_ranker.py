@@ -48,14 +48,6 @@ FEATURE_NAMES = [
     "recent_cooc_hits",
     "item_transition",
     "rule_score",
-    "row_pair_rank",
-    "row_dst_pop_rank",
-    "row_dst_recent_rank",
-    "row_dst_recency_rank",
-    "row_transition_rank",
-    "row_cooc_rank",
-    "row_rule_rank",
-    "row_is_rule_top1",
 ]
 
 
@@ -74,46 +66,6 @@ class CandidateFeatureBuilder:
         feats = self.features.features(src, time, dst)
         feats["rule_score"] = self.rule_ranker.score(src, time, dst)
         return [float(feats.get(name, 0.0)) for name in FEATURE_NAMES]
-
-    def matrix(self, src, time, candidates):
-        rows = [self.vector(src, time, dst) for dst in candidates]
-        self._add_row_context(rows)
-        return rows
-
-    @staticmethod
-    def _rank_percentiles(values):
-        n = len(values)
-        if n <= 1:
-            return [1.0] * n
-        order = sorted(range(n), key=lambda i: (values[i], i))
-        ranks = [0.0] * n
-        for rank, idx in enumerate(order):
-            ranks[idx] = rank / (n - 1)
-        return ranks
-
-    def _add_row_context(self, rows):
-        rank_pairs = [
-            ("pair_count", "row_pair_rank"),
-            ("dst_popularity", "row_dst_pop_rank"),
-            ("dst_recent_popularity", "row_dst_recent_rank"),
-            ("dst_recency", "row_dst_recency_rank"),
-            ("recent_transition_score", "row_transition_rank"),
-            ("recent_cooc_score", "row_cooc_rank"),
-            ("rule_score", "row_rule_rank"),
-        ]
-        for source_name, target_name in rank_pairs:
-            source_idx = FEATURE_NAMES.index(source_name)
-            target_idx = FEATURE_NAMES.index(target_name)
-            values = [row[source_idx] for row in rows]
-            ranks = self._rank_percentiles(values)
-            for row, rank in zip(rows, ranks):
-                row[target_idx] = rank
-
-        rule_idx = FEATURE_NAMES.index("rule_score")
-        top_idx = FEATURE_NAMES.index("row_is_rule_top1")
-        if rows:
-            best = max(range(len(rows)), key=lambda i: rows[i][rule_idx])
-            rows[best][top_idx] = 1.0
 
 
 class MLPRanker(nn.Module):
@@ -140,11 +92,11 @@ def normalize_features(x, mean, std):
 
 
 def save_model(path, model, meta):
-    jt.save({"state_dict": model.state_dict(), "meta": meta}, path)
+    jt.save({"state_dict": model.state_dict(), "meta": meta}, str(path))
 
 
 def load_model(path):
-    data = jt.load(path)
+    data = jt.load(str(path))
     meta = data["meta"]
     model = MLPRanker(meta["feature_dim"], meta.get("hidden_dim", 64))
     if hasattr(model, "load_state_dict"):

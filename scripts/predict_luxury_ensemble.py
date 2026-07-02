@@ -15,9 +15,8 @@ from src.luxury_scoring import (
     load_test_queries,
     load_train_edges,
     row_zscore,
-    score_mlp_model,
+    score_edge_mlp_model,
     score_rule,
-    score_seq_model,
     softmax,
 )
 
@@ -26,10 +25,8 @@ def score_component(component, dataset_name, train_edges, queries):
     ctype = component["type"]
     if ctype == "rule":
         return score_rule(dataset_name, train_edges, queries)
-    if ctype == "mlp":
-        return score_mlp_model(component["path"], dataset_name, train_edges, queries)
-    if ctype == "seq":
-        return score_seq_model(component["path"], dataset_name, train_edges, queries)
+    if ctype == "edge_mlp":
+        return score_edge_mlp_model(component["path"], dataset_name, train_edges, queries)
     if ctype == "craft":
         path = Path(component.get("test_path", ""))
         if not path.exists():
@@ -46,15 +43,34 @@ def write_dataset(dataset_dir, dataset_weights, output_path):
     train_edges = load_train_edges(dataset_dir)
     queries = load_test_queries(dataset_dir)
     total = None
+    rule_z = None
+
+    def get_rule_z():
+        nonlocal rule_z
+        if rule_z is None:
+            rule_z = row_zscore(score_rule(dataset_name, train_edges, queries))
+        return rule_z
 
     for component in dataset_weights["components"]:
         weight = float(component["weight"])
-        scores = score_component(component, dataset_name, train_edges, queries)
+        if component["type"] == "rule":
+            scores = get_rule_z()
+        else:
+            scores = score_component(component, dataset_name, train_edges, queries)
+            if len(scores) != len(queries):
+                raise ValueError(f"{dataset_name}:{component['name']} row mismatch {len(scores)} != {len(queries)}")
+            scores = row_zscore(scores)
+            if component.get("residualize", False):
+                scores = scores - get_rule_z()
         if len(scores) != len(queries):
             raise ValueError(f"{dataset_name}:{component['name']} row mismatch {len(scores)} != {len(queries)}")
-        scores = row_zscore(scores) * weight
+        scores = scores * weight
         total = scores if total is None else total + scores
-        print(f"{dataset_name}: loaded {component['name']} weight={weight}")
+        residual = " residual" if component.get("residualize", False) else ""
+        print(f"{dataset_name}: loaded {component['name']} weight={weight}{residual}")
+
+    if total is None:
+        raise ValueError(f"{dataset_name}: ensemble has no components")
 
     probs = softmax(total)
     with open(output_path, "w", newline="", encoding="utf-8") as f:

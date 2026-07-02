@@ -56,6 +56,27 @@ def build_test_prior(dataset_dir, train_edges, max_cold_pool, seed):
     }
 
 
+def build_test_templates(dataset_dir):
+    test_path = dataset_dir / "test.csv"
+    by_src = defaultdict(list)
+    all_rows = []
+    if not test_path.exists():
+        return {"by_src": by_src, "all": all_rows}
+
+    with open(test_path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        next(reader)
+        for row in reader:
+            src = int(row[0])
+            candidates = [int(value) for value in row[2:]]
+            if len(candidates) != 100:
+                continue
+            by_src[src].append(candidates)
+            all_rows.append(candidates)
+
+    return {"by_src": by_src, "all": all_rows}
+
+
 def build_hard_candidates(train_edges, recent_limit=80, popular_limit=2000):
     dst_counter = Counter()
     recent_by_src = defaultdict(lambda: deque(maxlen=recent_limit))
@@ -128,6 +149,8 @@ def sample_candidates(
     popular_sample,
     valid_mode,
     test_prior,
+    test_templates,
+    dst_seen,
     cold_fraction_override,
 ):
     seen = {positive}
@@ -160,6 +183,24 @@ def sample_candidates(
                 known_hard.append(cooc_values[i])
             if i < len(popular_values):
                 known_hard.append(popular_values[i])
+
+    if valid_mode == "test-row":
+        templates = test_templates.get("by_src", {}).get(src) or test_templates.get("all", [])
+        if templates:
+            candidates = list(rng.choice(templates))
+            if positive in candidates:
+                return candidates.index(positive), candidates
+
+            positive_is_cold = positive not in dst_seen
+            replace_pool = [
+                idx for idx, dst in enumerate(candidates)
+                if (dst not in dst_seen) == positive_is_cold
+            ]
+            if not replace_pool:
+                replace_pool = list(range(len(candidates)))
+            label = rng.choice(replace_pool)
+            candidates[label] = positive
+            return label, candidates
 
     if valid_mode == "test-prior":
         cold_fraction = (
@@ -213,6 +254,7 @@ def write_valid(
     rng = random.Random(seed)
     dst_values = [dst for _, dst, _ in train_edges]
     dst_unique = sorted(set(dst_values))
+    dst_seen = set(dst_unique)
     if not dst_unique:
         raise ValueError("training split has no destination nodes")
 
@@ -220,6 +262,7 @@ def write_valid(
         train_edges, hard_recent_limit, hard_popular_limit
     )
     test_prior = build_test_prior(dataset_dir, train_edges, max_cold_pool, seed)
+    test_templates = build_test_templates(dataset_dir) if valid_mode == "test-row" else {"by_src": {}, "all": []}
 
     rows = 0
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -242,6 +285,8 @@ def write_valid(
                 hard_popular_sample,
                 valid_mode,
                 test_prior,
+                test_templates,
+                dst_seen,
                 cold_fraction,
             )
             writer.writerow([src, time, label] + candidates)
@@ -304,8 +349,8 @@ def main():
     parser.add_argument("--hard-popular-sample", type=int, default=300)
     parser.add_argument(
         "--valid-mode",
-        choices=["test-prior", "recent-heavy", "popular-heavy", "transition-heavy", "mixed"],
-        default="test-prior",
+        choices=["test-row", "test-prior", "recent-heavy", "popular-heavy", "transition-heavy", "mixed"],
+        default="test-row",
     )
     parser.add_argument(
         "--cold-fraction",
