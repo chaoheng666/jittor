@@ -152,10 +152,10 @@ def pair_metrics(model, x_raw, mean, std, fuse_rule, gamma, batch_size):
         rows += end - start
 
     return {
-        "rule_acc": rule_acc,
-        "residual_acc": residual_correct / max(rows, 1),
-        "fused_acc": fused_correct / max(rows, 1),
-        "loss": loss_sum / max(rows, 1),
+        "future_rule_acc": rule_acc,
+        "future_residual_acc": residual_correct / max(rows, 1),
+        "future_fused_acc": fused_correct / max(rows, 1),
+        "future_eval_loss": loss_sum / max(rows, 1),
     }
 
 
@@ -226,11 +226,13 @@ def train_one_dataset(args, dataset_dir, dataset_name):
         metrics = pair_metrics(model, eval_raw, mean, std, args.fuse_rule, args.gamma, args.batch_size)
         print(
             f"{dataset_name} epoch={epoch} loss={loss_sum / max(steps, 1):.6f} "
-            f"rule_acc={metrics['rule_acc']:.6f} residual_acc={metrics['residual_acc']:.6f} "
-            f"fused_acc={metrics['fused_acc']:.6f} eval_loss={metrics['loss']:.6f}"
+            f"future_rule_acc={metrics['future_rule_acc']:.6f} "
+            f"future_residual_acc={metrics['future_residual_acc']:.6f} "
+            f"future_fused_acc={metrics['future_fused_acc']:.6f} "
+            f"future_eval_loss={metrics['future_eval_loss']:.6f}"
         )
-        if metrics["fused_acc"] > best_score + 1e-12:
-            best_score = metrics["fused_acc"]
+        if metrics["future_fused_acc"] > best_score + 1e-12:
+            best_score = metrics["future_fused_acc"]
             save_model(best_path, model, {
                 "dataset_name": dataset_name,
                 "feature_dim": int(x_train.shape[-1]),
@@ -240,14 +242,17 @@ def train_one_dataset(args, dataset_dir, dataset_name):
                 "std": std.tolist(),
                 "fuse_rule": float(args.fuse_rule),
                 "gamma": float(args.gamma),
-                "training_mode": "edge_residual",
+                "training_mode": "future_edge_intensity",
                 "zero_row_context": True,
                 "history_ratio": float(args.history_ratio),
                 "negatives": int(args.negatives),
                 "sample_edges": int(args.sample_edges),
-                "use_edge_mlp": bool(metrics["fused_acc"] > metrics["rule_acc"]),
+                "train_pairs": int(len(train_raw)),
+                "eval_pairs": int(len(eval_raw)),
+                **metrics,
+                "use_edge_mlp": bool(metrics["future_fused_acc"] > metrics["future_rule_acc"]),
             })
-    print(f"{dataset_name}: saved {best_path} best_fused_acc={best_score:.6f}")
+    print(f"{dataset_name}: saved {best_path} best_future_fused_acc={best_score:.6f}")
 
 
 def find_dataset_names(data_dir, dataset_arg):

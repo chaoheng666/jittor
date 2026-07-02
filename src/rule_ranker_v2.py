@@ -84,6 +84,12 @@ DEFAULT_WEIGHTS = {
 
 
 class RuleRankerV2:
+    """Rule-based future-edge intensity scorer.
+
+    Scores how likely a candidate destination is to receive the next edge from
+    a source at a given time, using only history before that time.
+    """
+
     def __init__(self, dataset_name="dataset1", weights=None):
         self.dataset_name = dataset_name
         self._explicit_weights = weights is not None

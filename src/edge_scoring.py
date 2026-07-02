@@ -1,4 +1,3 @@
-import csv
 from pathlib import Path
 
 import numpy as np
@@ -19,45 +18,12 @@ def load_jt_ranker_parts():
     return CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features
 
 
-def iter_valid_rows(path):
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            candidates = [int(row[f"c{i}"]) for i in range(1, 101)]
-            yield int(row["src"]), int(row["time"]), int(row["label"]), candidates
-
-
-def load_valid_queries(dataset_dir, max_rows=0):
-    rows = []
-    labels = []
-    for src, time, label, candidates in iter_valid_rows(Path(dataset_dir) / "valid.csv"):
-        if max_rows and len(rows) >= max_rows:
-            break
-        rows.append((src, time, candidates))
-        labels.append(label)
-    return rows, np.asarray(labels, dtype=np.int32)
+def load_train_edges(dataset_dir):
+    return list(iter_train_edges(Path(dataset_dir) / "train.csv"))
 
 
 def load_test_queries(dataset_dir):
     return [(src, time, candidates) for src, time, candidates in iter_test_rows(Path(dataset_dir) / "test.csv")]
-
-
-def rank_of_label(scores, label):
-    positive_score = scores[label]
-    rank = 1
-    for i, score in enumerate(scores):
-        if i != label and score > positive_score:
-            rank += 1
-    return rank
-
-
-def mrr(scores, labels):
-    if len(labels) == 0:
-        return 0.0
-    rr = 0.0
-    for row, label in zip(scores, labels):
-        rr += 1.0 / rank_of_label(row, int(label))
-    return rr / len(labels)
 
 
 def row_zscore(scores):
@@ -114,10 +80,6 @@ def score_edge_mlp_model(model_path, dataset_name, train_edges, queries, batch_s
             out.append(rule)
             continue
         x = normalize_features(x_raw, mean, std).astype(np.float32)
-        scores = model(jt.array(x)).numpy()
-        out.append(rule * fuse_rule + np.tanh(scores) * gamma)
+        residual = np.tanh(model(jt.array(x)).numpy())
+        out.append(rule * fuse_rule + residual * gamma)
     return np.vstack(out)
-
-
-def load_train_edges(dataset_dir):
-    return list(iter_train_edges(Path(dataset_dir) / "train.csv"))

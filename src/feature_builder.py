@@ -3,15 +3,16 @@ from collections import Counter, defaultdict, deque
 
 
 class FeatureBuilder:
-    """Time-aware candidate features for candidate reranking.
+    """Time-aware features for future-edge intensity scoring.
 
     The two public A-list scenes behave very differently:
     - dataset1 has many repeated edges, so pair memory is very strong.
     - dataset2 is bipartite and the official split contains new source-dst
       links, so item-to-item dynamics and destination freshness matter more.
 
-    This builder keeps both families of signals and lets the rule/model layer
-    decide how to weight them per dataset.
+    This builder keeps repeat-pair hazard, source sequence transition, and
+    destination prior signals. The rule/model layer decides how to weight them
+    per dataset.
     """
 
     def __init__(
