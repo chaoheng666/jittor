@@ -14,9 +14,9 @@ The current pipeline uses a sanity-gated fusion system:
 - `craft_residual`: optional Jittor target-aware residual with `zero_id`
   cold-node handling.
 
-Deep components receive non-zero fusion weights only when large-pool and
-time-replay validation do not show a regression. Official test candidates are
-used only for sanity checks and final export.
+Deep components are disabled when they are missing or fail validation. When a
+component is valid but weaker than the robust base/rule baselines, it is kept
+only at a reduced weight instead of being hard-zeroed.
 
 ## Run
 
@@ -49,19 +49,43 @@ result_best.zip
 - `RUN_SEQ=0`: skip next-destination training.
 - `RUN_CRAFT=0`: skip CRAFT residual training.
 - `INSTALL_JITTOR=0`: do not install Jittor automatically.
-- `VAL_MAX_EDGES=2000`, `VAL_POOL_SIZE=2000`: large-pool validation budget.
+- `VAL_MAX_EDGES=2000`, `VAL_POOL_SIZE=500`: broad mixed-pool validation
+  budget for the future-edge intensity objective.
+- `VAL_CANDIDATE_MODE=mixed`: keep the main validation aligned with scoring
+  arbitrary `(src, dst, time)` points. `test-prior` remains available only as
+  an optional diagnostic.
+- `REPLAY_POOL_SIZE=500`, `REPLAY_CANDIDATE_MODE=mixed`: time-replay validation
+  budget and sampling mode. Components with failed replay blocks are reduced or
+  disabled during fusion selection.
 - `SANITY_MAX_ROWS=5000`: official-candidate sanity sample size; set `0` for full.
+- `PREDICT_MAX_ROWS=0`: final prediction row limit; keep `0` for real
+  submissions, set a small value for shell smoke tests.
 - `EDGE_NEGATIVE_MODE=mixed`: legacy MLP negative sampler mode.
+- `LEGACY_VALIDATE_TOP_K=3`: validate the top legacy MLP candidates selected
+  by training metadata, then choose among those by mixed validation metrics.
+- `REQUIRE_LEARNED=1`: fail the full run if every learned component has zero
+  usable fusion weight for any dataset, including after official-candidate
+  sanity adjustments. Set `0` only for local smoke tests or intentional
+  rule/base-only probes.
+- `GPU_COUNT=8`, `MAX_PARALLEL=8`, `TOTAL_CPU_THREADS=48`: default resource
+  plan for an 8-GPU / 48-core server. GPU jobs use per-GPU locks, legacy MLP
+  jobs are split by hyperparameter and dataset, and each GPU job receives
+  `CPU_THREADS_PER_JOB=ceil(TOTAL_CPU_THREADS / MAX_PARALLEL)` by default.
+- `CPU_WORKERS=2`: run dataset-level CPU stages such as validation, sanity,
+  and prediction in parallel. Each worker receives
+  `CPU_THREADS_PER_WORKER=ceil(TOTAL_CPU_THREADS / CPU_WORKERS)` by default.
+  The default worker count is `2` because the provided data has two datasets.
 - `USE_CUDA=0`, `USE_VENV=0`: run in the current CPU Python environment.
 
 Fast local probe without Jittor:
 
 ```bash
 USE_CUDA=0 USE_VENV=0 INSTALL_JITTOR=0 RUN_LEGACY=0 \
+REQUIRE_LEARNED=0 \
 SEQ_SAMPLE_EDGES=100 CRAFT_SAMPLE_EDGES=100 \
 VAL_MAX_EDGES=20 VAL_POOL_SIZE=50 \
 REPLAY_BLOCKS=3 REPLAY_MAX_EVENTS=10 REPLAY_POOL_SIZE=50 \
-SANITY_MAX_ROWS=100 bash run_best.sh
+SANITY_MAX_ROWS=100 PREDICT_MAX_ROWS=100 bash run_best.sh
 ```
 
 Quick submission check:

@@ -61,7 +61,7 @@ def iter_eval_events(edges, history_ratio=0.8, max_events=0):
         yield row
 
 
-def build_large_pool_queries(valid_edges, sampler, pool_size=2000):
+def build_large_pool_queries(valid_edges, sampler, pool_size=500):
     for src, dst, time in valid_edges:
         negs = sampler.large_pool(src, dst, max(int(pool_size) - 1, 0))
         yield src, time, [dst] + negs

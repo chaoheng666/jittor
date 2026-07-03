@@ -3,6 +3,7 @@ import csv
 import json
 import sys
 import zipfile
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -36,6 +37,11 @@ def make_zip(output_dir, zip_path):
             zf.write(csv_path, arcname=csv_path.name)
 
 
+def write_dataset_worker(payload):
+    dataset_dir, dataset_config, output_path, batch_size, max_rows = payload
+    return dataset_dir.name, write_dataset(dataset_dir, dataset_config, output_path, batch_size, max_rows)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data_A")
@@ -45,6 +51,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--report", default="reports/export_check.json")
     parser.add_argument("--max-rows", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
 
     config = load_fusion_config(args.config)
@@ -53,13 +60,21 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     reports = {}
+    jobs = []
     for dataset_dir in find_dataset_dirs(args.data_dir):
         dataset_name = dataset_dir.name
         dataset_config = config["datasets"].get(dataset_name)
         if not dataset_config:
             print(f"skip {dataset_name}: no fusion config")
             continue
-        report = write_dataset(dataset_dir, dataset_config, out_dir / f"{dataset_name}.csv", args.batch_size, args.max_rows)
+        jobs.append((dataset_dir, dataset_config, out_dir / f"{dataset_name}.csv", args.batch_size, args.max_rows))
+    workers = min(max(int(args.workers), 1), max(len(jobs), 1))
+    if workers > 1:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(write_dataset_worker, jobs))
+    else:
+        results = [write_dataset_worker(job) for job in jobs]
+    for dataset_name, report in results:
         reports[dataset_name] = report
         print(f"{dataset_name}: wrote {report['rows']} rows")
     make_zip(out_dir, Path(args.zip))

@@ -2,6 +2,8 @@ import math
 import random
 from collections import Counter, defaultdict, deque
 
+import numpy as np
+
 
 DEFAULT_MIX = {
     "history_hard": 0.35,
@@ -49,14 +51,20 @@ class MixedNegativeSampler:
         self.dst_counter = Counter()
         self.node_values = set()
         by_src = defaultdict(list)
+        all_src = []
+        all_dst = []
 
         for src, dst, time in sorted(history_edges, key=lambda x: x[2]):
+            all_src.append(src)
+            all_dst.append(dst)
             self.dst_counter[dst] += 1
             self.node_values.add(src)
             self.node_values.add(dst)
             self.recent_by_src[src].append(dst)
             by_src[src].append((time, dst))
 
+        self.edge_src = np.asarray(all_src, dtype=np.int64)
+        self.edge_dst = np.asarray(all_dst, dtype=np.int64)
         self.dst_unique = list(self.dst_counter.keys())
         if not self.dst_unique:
             raise ValueError("history split has no destination nodes")
@@ -163,10 +171,24 @@ class MixedNegativeSampler:
             out.extend(self._take_from_list(hard_backfill, positive, count - len(out), seen))
         if len(out) < count:
             out.extend(self._random_seen(positive, count - len(out), seen))
+        if len(out) < count:
+            out.extend(self._random_cold(positive, count - len(out), seen))
+        if len(out) < count:
+            for dst in range(self.node_min, self.node_max + 1):
+                if len(out) >= count:
+                    break
+                if dst in self.dst_counter:
+                    continue
+                if self._allowed(positive, dst, seen):
+                    seen.add(dst)
+                    out.append(dst)
         return out[:count]
 
     def large_pool(self, src, positive, count):
         return self.sample(src, positive, count)
+
+    def lage_pool(self, src, positive, count):
+        return self.large_pool(src, positive, count)
 
     def proposal_probability(self, src, dst):
         q = 0.0
