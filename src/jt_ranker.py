@@ -13,6 +13,7 @@ FEATURE_NAMES = [
     "pair_recent_count",
     "pair_recency",
     "pair_time_gap",
+    "edge_decay",
     "in_recent_5",
     "in_recent_10",
     "in_recent_20",
@@ -27,6 +28,7 @@ FEATURE_NAMES = [
     "dst_recent_popularity",
     "dst_recent_popularity_10",
     "dst_recent_popularity_05",
+    "dst_pop_decay",
     "dst_trend",
     "dst_trend_10",
     "dst_recency",
@@ -46,6 +48,9 @@ FEATURE_NAMES = [
     "recent_cooc_score",
     "reverse_recent_cooc_score",
     "recent_cooc_hits",
+    "temporal_cn",
+    "temporal_aa",
+    "temporal_ra",
     "item_transition",
     "rule_score",
 ]
@@ -62,10 +67,12 @@ class CandidateFeatureBuilder:
         self.features.fit(edges)
         self.rule_ranker.fit(edges)
 
-    def vector(self, src, time, dst):
+    def vector(self, src, time, dst, feature_names=None):
+        if feature_names is None:
+            feature_names = FEATURE_NAMES
         feats = self.features.features(src, time, dst)
         feats["rule_score"] = self.rule_ranker.score(src, time, dst)
-        return [float(feats.get(name, 0.0)) for name in FEATURE_NAMES]
+        return [float(feats.get(name, 0.0)) for name in feature_names]
 
 
 class MLPRanker(nn.Module):

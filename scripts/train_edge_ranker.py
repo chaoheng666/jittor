@@ -14,6 +14,7 @@ from jittor import nn
 
 from src.data_loader import find_dataset_dirs
 from src.jt_ranker import CandidateFeatureBuilder, FEATURE_NAMES, MLPRanker, normalize_features, save_model
+from src.samplers import MixedNegativeSampler
 
 
 def read_edges(path):
@@ -175,13 +176,22 @@ def train_one_dataset(args, dataset_dir, dataset_name):
 
     builder = CandidateFeatureBuilder(dataset_name)
     builder.fit(history_edges)
-    sampler = EdgeNegativeSampler(
-        history_edges,
-        seed=args.seed,
-        recent_limit=args.recent_limit,
-        transition_limit=args.transition_limit,
-        popular_limit=args.popular_limit,
-    )
+    if args.negative_mode == "legacy":
+        sampler = EdgeNegativeSampler(
+            history_edges,
+            seed=args.seed,
+            recent_limit=args.recent_limit,
+            transition_limit=args.transition_limit,
+            popular_limit=args.popular_limit,
+        )
+    else:
+        sampler = MixedNegativeSampler(
+            history_edges,
+            seed=args.seed,
+            recent_limit=args.recent_limit,
+            transition_limit=args.transition_limit,
+            popular_limit=args.popular_limit,
+        )
 
     train_raw, train_skipped = build_pair_array(builder, sampler, train_pos, args.negatives)
     eval_raw, eval_skipped = build_pair_array(builder, sampler, eval_pos, args.negatives)
@@ -243,6 +253,7 @@ def train_one_dataset(args, dataset_dir, dataset_name):
                 "fuse_rule": float(args.fuse_rule),
                 "gamma": float(args.gamma),
                 "training_mode": "future_edge_intensity",
+                "negative_mode": args.negative_mode,
                 "zero_row_context": True,
                 "history_ratio": float(args.history_ratio),
                 "negatives": int(args.negatives),
@@ -280,6 +291,7 @@ def main():
     parser.add_argument("--recent-limit", type=int, default=100)
     parser.add_argument("--transition-limit", type=int, default=200)
     parser.add_argument("--popular-limit", type=int, default=3000)
+    parser.add_argument("--negative-mode", choices=["legacy", "mixed", "proposal"], default="legacy")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--seed-list", default="")
     parser.add_argument("--cuda", action="store_true")

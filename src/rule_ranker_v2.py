@@ -11,6 +11,7 @@ REPEAT_EDGE_WEIGHTS = {
     "pair_count": 6.5,
     "pair_recent_count": 2.0,
     "pair_recency": 5.5,
+    "edge_decay": 2.2,
     "in_recent_5": 3.0,
     "in_recent_10": 2.0,
     "in_recent_20": 1.2,
@@ -23,6 +24,7 @@ REPEAT_EDGE_WEIGHTS = {
     "dst_popularity": 0.35,
     "dst_recent_popularity": 0.55,
     "dst_recent_popularity_10": 0.25,
+    "dst_pop_decay": 0.35,
     "dst_trend": 0.25,
     "dst_recency": 0.45,
     "dst_unique_src": 0.15,
@@ -36,6 +38,9 @@ REPEAT_EDGE_WEIGHTS = {
     "recent_cooc_hits": 0.35,
     "reverse_recent_transition_score": 0.3,
     "reverse_recent_cooc_score": 0.25,
+    "temporal_cn": 0.8,
+    "temporal_aa": 0.5,
+    "temporal_ra": 0.3,
 }
 
 
@@ -45,6 +50,7 @@ NEW_LINK_WEIGHTS = {
     "pair_count": -1.8,
     "pair_recent_count": -1.2,
     "pair_recency": -0.5,
+    "edge_decay": -0.4,
     "in_recent_5": -1.2,
     "in_recent_10": -0.9,
     "in_recent_20": -0.6,
@@ -60,6 +66,7 @@ NEW_LINK_WEIGHTS = {
     "dst_recent_popularity": 1.4,
     "dst_recent_popularity_10": 1.2,
     "dst_recent_popularity_05": 0.9,
+    "dst_pop_decay": 0.9,
     "dst_trend": 0.7,
     "dst_trend_10": 0.45,
     "dst_recency": 1.2,
@@ -74,6 +81,9 @@ NEW_LINK_WEIGHTS = {
     "recent_cooc_hits": 0.65,
     "reverse_recent_transition_score": 0.25,
     "reverse_recent_cooc_score": 0.25,
+    "temporal_cn": 0.7,
+    "temporal_aa": 0.5,
+    "temporal_ra": 0.3,
 }
 
 

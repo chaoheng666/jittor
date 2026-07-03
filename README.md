@@ -1,11 +1,22 @@
-# Jittor Future-Edge Intensity Ranker
+# Jittor Future-Edge Fusion Ranker
 
-This repository predicts the strength of future temporal edges and ranks the
-100 official candidates for each `(src, time)` test row.
+This repository predicts future temporal edge intensity and ranks the 100
+official candidates for each `(src, time)` test row.
 
-The current pipeline no longer builds a synthetic validation candidate set. It
-learns from real future edges with hard negatives, selects the best model by
-future-edge pairwise accuracy, and then scores the official candidates.
+The current pipeline uses a sanity-gated fusion system:
+
+- `base_intensity_v3`: statistical future-edge intensity from repeat edges,
+  recency, destination popularity, source transitions, and temporal CN/AA/RA.
+- `manual_rule`: the original robust rule prior.
+- `edge_mlp_legacy`: the previous Jittor MLP residual baseline, kept as a
+  fallback and A/B comparison.
+- `seq_nextdst`: optional Jittor next-destination sequence tower.
+- `craft_residual`: optional Jittor target-aware residual with `zero_id`
+  cold-node handling.
+
+Deep components receive non-zero fusion weights only when large-pool and
+time-replay validation do not show a regression. Official test candidates are
+used only for sanity checks and final export.
 
 ## Run
 
@@ -24,29 +35,33 @@ result_best.zip
 ## Pipeline
 
 1. Check or download `data_A`.
-2. Train edge-intensity MLP sweeps from real temporal edges.
-3. Select the best model per dataset using future-edge pairwise accuracy.
-4. Score the 100 official candidates for each test row.
-5. Softmax each row and pack `result_best.zip`.
+2. Analyze data distribution into `reports/data_stats/`.
+3. Build `base_intensity_v3` artifacts.
+4. Train optional Jittor deep components and legacy MLP if Jittor is available.
+5. Run large-pool validation and time-replay validation.
+6. Select `models_v2/fusion_config.json`.
+7. Run official-candidate sanity and automatically reduce risky deep weights.
+8. Score official candidates, softmax each row, and pack `result_best.zip`.
 
 ## Common Overrides
 
-- `EDGE_HIDDEN_DIMS=64,128,256`: MLP hidden-size sweep.
-- `EDGE_GAMMAS=0.05,0.08,0.15,0.25,0.35`: residual strength sweep.
-- `EDGE_SEEDS=2026,2027`: training seeds.
-- `EDGE_NEGATIVES=10`: hard negatives per real future edge.
-- `EDGE_SAMPLE_EDGES=250000`: cap supervision edges per dataset per model; set `0` for all.
-- `MIN_FUTURE_GAIN=0.0005`: minimum gain over rule-only before selecting an MLP.
-- `USE_CUDA=0`: run on CPU.
-- `USE_VENV=0`: use the current Python environment.
+- `RUN_LEGACY=0`: skip legacy edge MLP training.
+- `RUN_SEQ=0`: skip next-destination training.
+- `RUN_CRAFT=0`: skip CRAFT residual training.
+- `INSTALL_JITTOR=0`: do not install Jittor automatically.
+- `VAL_MAX_EDGES=2000`, `VAL_POOL_SIZE=2000`: large-pool validation budget.
+- `SANITY_MAX_ROWS=5000`: official-candidate sanity sample size; set `0` for full.
+- `EDGE_NEGATIVE_MODE=mixed`: legacy MLP negative sampler mode.
+- `USE_CUDA=0`, `USE_VENV=0`: run in the current CPU Python environment.
 
-Fast local probe:
+Fast local probe without Jittor:
 
 ```bash
-USE_CUDA=0 USE_VENV=0 MAX_PARALLEL=1 GPU_COUNT=1 \
-EDGE_HIDDEN_DIMS=8 EDGE_GAMMAS=0.05 EDGE_SEEDS=2026 \
-EDGE_EPOCHS=1 EDGE_NEGATIVES=2 EDGE_SAMPLE_EDGES=2000 \
-bash run_best.sh
+USE_CUDA=0 USE_VENV=0 INSTALL_JITTOR=0 RUN_LEGACY=0 \
+SEQ_SAMPLE_EDGES=100 CRAFT_SAMPLE_EDGES=100 \
+VAL_MAX_EDGES=20 VAL_POOL_SIZE=50 \
+REPLAY_BLOCKS=3 REPLAY_MAX_EVENTS=10 REPLAY_POOL_SIZE=50 \
+SANITY_MAX_ROWS=100 bash run_best.sh
 ```
 
 Quick submission check:

@@ -21,11 +21,19 @@ class FeatureBuilder:
         cooc_window=8,
         cooc_recent_limit=300,
         cooc_topk=300,
+        structure_topk=256,
+        beta_pair=0.02,
+        beta_dst=0.01,
+        beta_cn=0.02,
     ):
         self.recent_limit = recent_limit
         self.cooc_window = cooc_window
         self.cooc_recent_limit = cooc_recent_limit
         self.cooc_topk = cooc_topk
+        self.structure_topk = structure_topk
+        self.beta_pair = beta_pair
+        self.beta_dst = beta_dst
+        self.beta_cn = beta_cn
 
         self.pair_count = Counter()
         self.pair_recent_count = Counter()
@@ -52,6 +60,9 @@ class FeatureBuilder:
         self.reverse_transition = defaultdict(Counter)
         self.cooc_transition = defaultdict(Counter)
         self.reverse_cooc_transition = defaultdict(Counter)
+        self.out_last = defaultdict(dict)
+        self.in_last = defaultdict(dict)
+        self.node_temporal_degree = Counter()
         self.min_time = 0
         self.max_time = 0
         self.recent_start = 0
@@ -88,6 +99,8 @@ class FeatureBuilder:
             src_dst_sets[src].add(dst)
             dst_src_sets[dst].add(src)
             by_src[src].append((time, dst))
+            self.out_last[src][dst] = time
+            self.in_last[dst][src] = time
             src_values.add(src)
             dst_values.add(dst)
             if time >= self.recent_start:
@@ -125,6 +138,11 @@ class FeatureBuilder:
         self._prune_nested_counter(self.reverse_transition, self.cooc_topk)
         self._prune_nested_counter(self.cooc_transition, self.cooc_topk)
         self._prune_nested_counter(self.reverse_cooc_transition, self.cooc_topk)
+        self._prune_last_dict(self.out_last, self.structure_topk)
+        self._prune_last_dict(self.in_last, self.structure_topk)
+
+        for node in set(self.out_last.keys()) | set(self.in_last.keys()):
+            self.node_temporal_degree[node] = len(self.out_last.get(node, ())) + len(self.in_last.get(node, ()))
 
         for src, dsts in src_dst_sets.items():
             unique_count = len(dsts)
@@ -168,6 +186,15 @@ class FeatureBuilder:
             if len(counter) > topk:
                 table[key] = Counter(dict(counter.most_common(topk)))
 
+    @staticmethod
+    def _prune_last_dict(table, topk):
+        if topk <= 0:
+            return
+        for key in list(table.keys()):
+            values = table[key]
+            if len(values) > topk:
+                table[key] = dict(sorted(values.items(), key=lambda x: x[1], reverse=True)[:topk])
+
     def recency(self, last_time, current_time=None, scale=20.0):
         if last_time is None:
             return 0.0
@@ -182,6 +209,42 @@ class FeatureBuilder:
         if last_time is None:
             return 0.0
         return math.log1p(max(current_time - last_time, 0))
+
+    def _decayed_count(self, count, last_time, current_time, beta):
+        if not count or last_time is None:
+            return 0.0
+        span = max(self.max_time - self.min_time, 1)
+        age = max(current_time - last_time, 0) / span
+        return math.log1p(count) * math.exp(-float(beta) * age * 100.0)
+
+    def _temporal_common_neighbor_scores(self, src, dst, time):
+        out_src = self.out_last.get(src, {})
+        in_dst = self.in_last.get(dst, {})
+        if not out_src or not in_dst:
+            return 0.0, 0.0, 0.0
+        if len(out_src) <= len(in_dst):
+            smaller = out_src
+            other = in_dst
+        else:
+            smaller = in_dst
+            other = out_src
+
+        span = max(self.max_time - self.min_time, 1)
+        cn = 0.0
+        aa = 0.0
+        ra = 0.0
+        for node, t1 in smaller.items():
+            t2 = other.get(node)
+            if t2 is None:
+                continue
+            last_time = max(t1, t2)
+            age = max(time - last_time, 0) / span
+            decay = math.exp(-self.beta_cn * age * 100.0)
+            degree = max(self.node_temporal_degree[node], 1)
+            cn += decay
+            aa += decay / math.log(2.0 + degree)
+            ra += decay / (1.0 + degree)
+        return math.log1p(cn), math.log1p(aa), math.log1p(ra)
 
     def _recent_sequence_scores(self, recent, dst):
         same_decay = 0.0
@@ -242,6 +305,7 @@ class FeatureBuilder:
         dst_last_time = self.dst_last_time.get(dst)
         recent_count = recent.count(dst)
         seq_scores = self._recent_sequence_scores(recent, dst)
+        temporal_cn, temporal_aa, temporal_ra = self._temporal_common_neighbor_scores(src, dst, time)
         last_dst = self.src_last_dst.get(src)
         last_transition = self.transition[last_dst][dst] if last_dst is not None else 0
         last_reverse_transition = self.reverse_transition[last_dst][dst] if last_dst is not None else 0
@@ -255,6 +319,7 @@ class FeatureBuilder:
             "pair_recent_count": math.log1p(self.pair_recent_count[pair]),
             "pair_recency": self.recency(last_time, time) if last_time is not None else 0.0,
             "pair_time_gap": self._log_gap(time, last_time),
+            "edge_decay": self._decayed_count(self.pair_count[pair], last_time, time, self.beta_pair),
             "in_recent_5": 1.0 if dst in self.src_recent_5.get(src, ()) else 0.0,
             "in_recent_10": 1.0 if dst in self.src_recent_10.get(src, ()) else 0.0,
             "in_recent_20": 1.0 if dst in self.src_recent_20.get(src, ()) else 0.0,
@@ -268,6 +333,7 @@ class FeatureBuilder:
             "dst_recent_popularity": math.log1p(dst_recent),
             "dst_recent_popularity_10": math.log1p(dst_recent_10),
             "dst_recent_popularity_05": math.log1p(dst_recent_05),
+            "dst_pop_decay": self._decayed_count(dst_count, dst_last_time, time, self.beta_dst),
             "dst_trend": math.log1p(dst_recent) - math.log1p(dst_old),
             "dst_trend_10": math.log1p(dst_recent_10) - math.log1p(max(dst_count - dst_recent_10, 0)),
             "src_activity": math.log1p(self.src_count[src]),
@@ -288,6 +354,9 @@ class FeatureBuilder:
             "recent_cooc_score": seq_scores["recent_cooc_score"],
             "reverse_recent_cooc_score": seq_scores["reverse_recent_cooc_score"],
             "recent_cooc_hits": seq_scores["recent_cooc_hits"],
+            "temporal_cn": temporal_cn,
+            "temporal_aa": temporal_aa,
+            "temporal_ra": temporal_ra,
         }
         # Backward-compatible alias used by older model metadata.
         feats["item_transition"] = feats["last_transition"]
