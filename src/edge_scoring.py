@@ -13,15 +13,9 @@ def load_jittor():
 
 
 def load_jt_ranker_parts():
-    from .jt_ranker import (
-        CandidateFeatureBuilder,
-        FEATURE_NAMES,
-        load_model,
-        normalize_features,
-        normalize_query_features,
-    )
+    from .jt_ranker import CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features
 
-    return CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features, normalize_query_features
+    return CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features
 
 
 def load_train_edges(dataset_dir):
@@ -58,40 +52,34 @@ def score_rule(dataset_name, train_edges, queries):
 
 def score_edge_mlp_model(model_path, dataset_name, train_edges, queries, batch_size=512):
     jt = load_jittor()
-    CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features, normalize_query_features = load_jt_ranker_parts()
+    CandidateFeatureBuilder, FEATURE_NAMES, load_model, normalize_features = load_jt_ranker_parts()
     model, meta = load_model(model_path)
-    builder = CandidateFeatureBuilder(
-        dataset_name,
-        history_len=int(meta.get("history_len", 60)),
-        node_values=meta.get("node_values"),
-    )
+    builder = CandidateFeatureBuilder(dataset_name)
     builder.fit(train_edges)
 
     mean = np.asarray(meta["mean"], dtype=np.float32)
     std = np.asarray(meta["std"], dtype=np.float32)
-    query_mean = np.asarray(meta["query_mean"], dtype=np.float32)
-    query_std = np.asarray(meta["query_std"], dtype=np.float32)
-    use_craft_model = bool(meta.get("use_craft_model", True))
+    fuse_rule = float(meta.get("fuse_rule", 1.0))
+    gamma = float(meta.get("gamma", 0.15))
+    use_edge_mlp = bool(meta.get("use_edge_mlp", True))
     rule_idx = FEATURE_NAMES.index("rule_score")
 
     model.eval()
     out = []
     for start in range(0, len(queries), batch_size):
         chunk = queries[start:start + batch_size]
-        arrays = builder.arrays_for_queries(chunk)
-        rule = arrays["x"][:, :, rule_idx]
-        if not use_craft_model:
+        x_raw = np.asarray(
+            [
+                [builder.vector(src, time, dst) for dst in candidates]
+                for src, time, candidates in chunk
+            ],
+            dtype=np.float32,
+        )
+        rule = x_raw[:, :, rule_idx]
+        if not use_edge_mlp:
             out.append(rule)
             continue
-        x = normalize_features(arrays["x"], mean, std).astype(np.float32)
-        query = normalize_query_features(arrays["query"], query_mean, query_std).astype(np.float32)
-        scores = model(
-            jt.array(x),
-            jt.array(arrays["candidate_idx"].astype(np.int32)),
-            jt.array(arrays["history_idx"].astype(np.int32)),
-            jt.array(arrays["history_delta"].astype(np.float32)),
-            jt.array(arrays["history_mask"].astype(np.float32)),
-            jt.array(query),
-        ).numpy()
-        out.append(scores)
+        x = normalize_features(x_raw, mean, std).astype(np.float32)
+        residual = np.tanh(model(jt.array(x)).numpy())
+        out.append(rule * fuse_rule + residual * gamma)
     return np.vstack(out)

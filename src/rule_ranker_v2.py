@@ -36,14 +36,6 @@ REPEAT_EDGE_WEIGHTS = {
     "recent_cooc_hits": 0.35,
     "reverse_recent_transition_score": 0.3,
     "reverse_recent_cooc_score": 0.25,
-    "temporal_cn": 0.8,
-    "recent_cn": 0.6,
-    "temporal_aa": 0.4,
-    "temporal_ra": 0.2,
-    "preferential_attachment": 0.12,
-    "two_hop_overlap": 0.35,
-    "shared_recent_neighbor": 0.5,
-    "static_common_neighbors": 0.25,
 }
 
 
@@ -82,14 +74,6 @@ NEW_LINK_WEIGHTS = {
     "recent_cooc_hits": 0.65,
     "reverse_recent_transition_score": 0.25,
     "reverse_recent_cooc_score": 0.25,
-    "temporal_cn": 1.5,
-    "recent_cn": 1.0,
-    "temporal_aa": 0.75,
-    "temporal_ra": 0.35,
-    "preferential_attachment": 0.2,
-    "two_hop_overlap": 0.65,
-    "shared_recent_neighbor": 0.7,
-    "static_common_neighbors": 0.15,
 }
 
 
@@ -100,7 +84,7 @@ DEFAULT_WEIGHTS = {
 
 
 class RuleRankerV2:
-    """Rule-based future-edge rerank scorer.
+    """Rule-based future-edge intensity scorer.
 
     Scores how likely a candidate destination is to receive the next edge from
     a source at a given time, using only history before that time.

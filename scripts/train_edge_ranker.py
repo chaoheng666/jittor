@@ -13,15 +13,7 @@ import jittor as jt
 from jittor import nn
 
 from src.data_loader import find_dataset_dirs
-from src.jt_ranker import (
-    CandidateFeatureBuilder,
-    CraftRerankModel,
-    FEATURE_NAMES,
-    QUERY_FEATURE_NAMES,
-    normalize_features,
-    normalize_query_features,
-    save_model,
-)
+from src.jt_ranker import CandidateFeatureBuilder, FEATURE_NAMES, MLPRanker, normalize_features, save_model
 
 
 def read_edges(path):
@@ -45,9 +37,9 @@ class EdgeNegativeSampler:
         self,
         history_edges,
         seed,
-        recent_limit=120,
-        transition_limit=300,
-        popular_limit=5000,
+        recent_limit=100,
+        transition_limit=200,
+        popular_limit=3000,
         cooc_window=8,
     ):
         self.rng = random.Random(seed)
@@ -68,7 +60,7 @@ class EdgeNegativeSampler:
         if not self.dst_unique:
             raise ValueError("history split has no destination nodes")
 
-        for _, rows in by_src.items():
+        for src, rows in by_src.items():
             rows.sort()
             dsts = [dst for _, dst in rows]
             for i in range(1, len(dsts)):
@@ -81,8 +73,7 @@ class EdgeNegativeSampler:
                     if prev != dst:
                         self.cooc[prev][dst] += 1.0 / (i - j)
 
-    @staticmethod
-    def _allowed(positive, dst, seen):
+    def _allowed(self, src, positive, dst, seen):
         return dst != positive and dst not in seen
 
     def sample(self, src, positive, count):
@@ -99,7 +90,7 @@ class EdgeNegativeSampler:
         for dst in hard:
             if len(negatives) >= count:
                 return negatives
-            if self._allowed(positive, dst, seen):
+            if self._allowed(src, positive, dst, seen):
                 seen.add(dst)
                 negatives.append(dst)
 
@@ -108,7 +99,7 @@ class EdgeNegativeSampler:
         while len(negatives) < count and tries < max_tries:
             tries += 1
             dst = self.rng.choice(self.dst_unique)
-            if self._allowed(positive, dst, seen):
+            if self._allowed(src, positive, dst, seen):
                 seen.add(dst)
                 negatives.append(dst)
         return negatives
@@ -122,97 +113,50 @@ def choose_positive_edges(edges, sample_edges, rng):
     return list(edges)
 
 
-def build_listwise_queries(builder, sampler, positives, negatives):
-    queries = []
-    seen_flags = []
+def build_pair_array(builder, sampler, positives, negatives):
+    rows = []
     skipped = 0
     for src, dst, time in positives:
         negs = sampler.sample(src, dst, negatives)
-        if len(negs) < negatives:
+        if not negs:
             skipped += 1
             continue
-        queries.append((src, time, [dst] + negs))
-        seen_flags.append(1 if builder.features.pair_count[(src, dst)] else 0)
-    if not queries:
-        raise ValueError("could not build any listwise training queries")
-    targets = np.zeros(len(queries), dtype=np.int32)
-    return queries, targets, np.asarray(seen_flags, dtype=np.int32), skipped
+        pos_vec = builder.vector(src, time, dst)
+        for neg_dst in negs:
+            rows.append([pos_vec, builder.vector(src, time, neg_dst)])
+    if not rows:
+        raise ValueError("could not build any edge training pairs")
+    return np.asarray(rows, dtype=np.float32), skipped
 
 
-def normalize_batch_arrays(arrays, mean, std, query_mean, query_std):
-    return {
-        "x": normalize_features(arrays["x"], mean, std).astype(np.float32),
-        "candidate_idx": arrays["candidate_idx"].astype(np.int32),
-        "history_idx": arrays["history_idx"].astype(np.int32),
-        "history_delta": arrays["history_delta"].astype(np.float32),
-        "history_mask": arrays["history_mask"].astype(np.float32),
-        "query": normalize_query_features(arrays["query"], query_mean, query_std).astype(np.float32),
-    }
-
-
-def model_scores(model, arrays, batch_size):
-    model.eval()
-    out = []
-    for start in range(0, len(arrays["x"]), batch_size):
-        end = min(start + batch_size, len(arrays["x"]))
-        scores = model(
-            jt.array(arrays["x"][start:end]),
-            jt.array(arrays["candidate_idx"][start:end]),
-            jt.array(arrays["history_idx"][start:end]),
-            jt.array(arrays["history_delta"][start:end]),
-            jt.array(arrays["history_mask"][start:end]),
-            jt.array(arrays["query"][start:end]),
-        ).numpy()
-        out.append(scores)
-    return np.vstack(out)
-
-
-def ranking_metrics(scores, targets, seen_flags):
-    ranks = []
-    for row, target in zip(scores, targets):
-        target_score = row[target]
-        rank = 1 + int(np.sum(row > target_score))
-        ranks.append(rank)
-    ranks = np.asarray(ranks, dtype=np.float64)
-    rr = 1.0 / ranks
-    seen_flags = np.asarray(seen_flags, dtype=np.int32)
-    seen_mask = seen_flags == 1
-    unseen_mask = ~seen_mask
-    return {
-        "validation_mrr": float(rr.mean()) if len(rr) else 0.0,
-        "validation_hit1": float(np.mean(ranks == 1)) if len(ranks) else 0.0,
-        "validation_seen_mrr": float(rr[seen_mask].mean()) if np.any(seen_mask) else 0.0,
-        "validation_unseen_mrr": float(rr[unseen_mask].mean()) if np.any(unseen_mask) else 0.0,
-    }
-
-
-def evaluate_model(model, eval_arrays, eval_raw_arrays, targets, seen_flags, batch_size):
-    scores = model_scores(model, eval_arrays, batch_size)
-    metrics = ranking_metrics(scores, targets, seen_flags)
+def pair_metrics(model, x_raw, mean, std, fuse_rule, gamma, batch_size):
+    x = normalize_features(x_raw, mean, std).astype(np.float32)
     rule_idx = FEATURE_NAMES.index("rule_score")
-    rule_scores = eval_raw_arrays["x"][:, :, rule_idx]
-    rule_metrics = ranking_metrics(rule_scores, targets, seen_flags)
-    metrics.update({
-        "rule_mrr": rule_metrics["validation_mrr"],
-        "rule_hit1": rule_metrics["validation_hit1"],
-        "rule_seen_mrr": rule_metrics["validation_seen_mrr"],
-        "rule_unseen_mrr": rule_metrics["validation_unseen_mrr"],
-    })
-    return metrics, scores, rule_scores
+    rule_diff_all = x_raw[:, 0, rule_idx] - x_raw[:, 1, rule_idx]
+    rule_acc = float(np.mean(rule_diff_all > 0))
 
+    fused_correct = 0
+    residual_correct = 0
+    loss_sum = 0.0
+    rows = 0
+    model.eval()
+    for start in range(0, len(x), batch_size):
+        end = min(start + batch_size, len(x))
+        scores = model(jt.array(x[start:end])).numpy()
+        residual_diff = scores[:, 0] - scores[:, 1]
+        rule_diff = rule_diff_all[start:end]
+        fused_diff = rule_diff * fuse_rule + residual_diff * gamma
+        loss_sum += float(np.log1p(np.exp(-np.clip(fused_diff, -50, 50))).sum())
+        fused_correct += int((fused_diff > 0).sum())
+        residual_correct += int((residual_diff > 0).sum())
+        rows += end - start
 
-def save_eval_cache(path, scores, rule_scores, targets, seen_flags, queries):
-    candidates = np.asarray([row[2] for row in queries], dtype=np.int64)
-    keys = np.asarray([[src, time, row[0]] for src, time, row in queries], dtype=np.int64)
-    np.savez_compressed(
-        path,
-        scores=scores.astype(np.float32),
-        rule_scores=rule_scores.astype(np.float32),
-        targets=targets.astype(np.int32),
-        seen_flags=seen_flags.astype(np.int32),
-        keys=keys,
-        candidates=candidates,
-    )
+    return {
+        "future_rule_acc": rule_acc,
+        "future_residual_acc": residual_correct / max(rows, 1),
+        "future_fused_acc": fused_correct / max(rows, 1),
+        "future_eval_loss": loss_sum / max(rows, 1),
+    }
 
 
 def train_one_dataset(args, dataset_dir, dataset_name):
@@ -229,61 +173,35 @@ def train_one_dataset(args, dataset_dir, dataset_name):
         train_pos = positives
         eval_pos = positives
 
-    builder = CandidateFeatureBuilder(dataset_name, history_len=args.history_len)
+    builder = CandidateFeatureBuilder(dataset_name)
     builder.fit(history_edges)
     sampler = EdgeNegativeSampler(
         history_edges,
         seed=args.seed,
-        recent_limit=max(args.history_len, args.recent_limit),
+        recent_limit=args.recent_limit,
         transition_limit=args.transition_limit,
         popular_limit=args.popular_limit,
     )
 
-    train_queries, train_targets, train_seen, train_skipped = build_listwise_queries(
-        builder, sampler, train_pos, args.negatives
-    )
-    eval_queries, eval_targets, eval_seen, eval_skipped = build_listwise_queries(
-        builder, sampler, eval_pos, args.negatives
-    )
-    train_raw = builder.arrays_for_queries(train_queries)
-    eval_raw = builder.arrays_for_queries(eval_queries)
-
-    flat_train = train_raw["x"].reshape(-1, train_raw["x"].shape[-1])
-    mean = flat_train.mean(axis=0).astype(np.float32)
-    std = flat_train.std(axis=0)
+    train_raw, train_skipped = build_pair_array(builder, sampler, train_pos, args.negatives)
+    eval_raw, eval_skipped = build_pair_array(builder, sampler, eval_pos, args.negatives)
+    mean = train_raw.reshape(-1, train_raw.shape[-1]).mean(axis=0).astype(np.float32)
+    std = train_raw.reshape(-1, train_raw.shape[-1]).std(axis=0)
     std = np.where(std < 1e-6, 1.0, std).astype(np.float32)
-    query_mean = train_raw["query"].mean(axis=0).astype(np.float32)
-    query_std = train_raw["query"].std(axis=0)
-    query_std = np.where(query_std < 1e-6, 1.0, query_std).astype(np.float32)
+    x_train = normalize_features(train_raw, mean, std).astype(np.float32)
+    rule_idx = FEATURE_NAMES.index("rule_score")
 
-    train_arrays = normalize_batch_arrays(train_raw, mean, std, query_mean, query_std)
-    eval_arrays = normalize_batch_arrays(eval_raw, mean, std, query_mean, query_std)
-
-    model = CraftRerankModel(
-        feature_dim=len(FEATURE_NAMES),
-        query_dim=len(QUERY_FEATURE_NAMES),
-        node_count=builder.node_count,
-        history_len=args.history_len,
-        hidden_dim=args.hidden_dim,
-        embed_dim=args.embed_dim,
-    )
+    model = MLPRanker(x_train.shape[-1], args.hidden_dim)
     optimizer = nn.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    order = list(range(len(train_arrays["x"])))
-    best_mrr = -1.0
-    best_scores = None
-    best_rule_scores = None
-    best_metrics = None
-    model_dir = Path(args.model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
-    best_path = model_dir / f"{dataset_name}_edge_ranker.pkl"
-    eval_cache_path = model_dir / f"{dataset_name}_edge_ranker_eval.npz"
+    order = list(range(len(x_train)))
+    best_score = -1.0
+    best_path = Path(args.model_dir) / f"{dataset_name}_edge_ranker.pkl"
+    Path(args.model_dir).mkdir(parents=True, exist_ok=True)
 
     print(
         f"{dataset_name}: history={len(history_edges)} supervision={len(supervision_edges)} "
-        f"train_queries={len(train_queries)} eval_queries={len(eval_queries)} "
-        f"candidates={args.negatives + 1} nodes={builder.node_count} "
-        f"repeat_fraction={builder.features.repeat_edge_fraction:.6f} "
-        f"bipartite={int(builder.features.is_bipartite_like)} "
+        f"train_pos={len(train_pos)} eval_pos={len(eval_pos)} "
+        f"train_pairs={len(train_raw)} eval_pairs={len(eval_raw)} "
         f"skipped={train_skipped + eval_skipped}"
     )
 
@@ -292,72 +210,49 @@ def train_one_dataset(args, dataset_dir, dataset_name):
         rng.shuffle(order)
         loss_sum = 0.0
         steps = 0
-        candidate_size = train_arrays["x"].shape[1]
         for start in range(0, len(order), args.batch_size):
             batch_idx = order[start:start + args.batch_size]
-            scores = model(
-                jt.array(train_arrays["x"][batch_idx]),
-                jt.array(train_arrays["candidate_idx"][batch_idx]),
-                jt.array(train_arrays["history_idx"][batch_idx]),
-                jt.array(train_arrays["history_delta"][batch_idx]),
-                jt.array(train_arrays["history_mask"][batch_idx]),
-                jt.array(train_arrays["query"][batch_idx]),
-            )
-            targets = jt.array(train_targets[batch_idx])
-            list_loss = nn.cross_entropy_loss(scores, targets)
-            diff = scores[:, 0:1] - scores[:, 1:]
-            flat_diff = diff.reshape(-1)
-            pair_logits = jt.stack([flat_diff * 0.0, flat_diff], dim=1)
-            pair_targets = jt.array(np.ones(len(batch_idx) * (candidate_size - 1), dtype=np.int32))
-            pair_loss = nn.cross_entropy_loss(pair_logits, pair_targets)
-            loss = list_loss + pair_loss * args.pairwise_weight
+            bx = jt.array(x_train[batch_idx])
+            br = jt.array(train_raw[batch_idx, :, rule_idx])
+            scores = model(bx)
+            diff = (br[:, 0] - br[:, 1]) * args.fuse_rule + (scores[:, 0] - scores[:, 1]) * args.gamma
+            logits = jt.stack([diff * 0.0, diff], dim=1)
+            targets = jt.array(np.ones(len(batch_idx), dtype=np.int32))
+            loss = nn.cross_entropy_loss(logits, targets)
             optimizer.step(loss)
             loss_sum += float(loss.numpy())
             steps += 1
 
-        metrics, scores, rule_scores = evaluate_model(
-            model, eval_arrays, eval_raw, eval_targets, eval_seen, args.batch_size
-        )
+        metrics = pair_metrics(model, eval_raw, mean, std, args.fuse_rule, args.gamma, args.batch_size)
         print(
             f"{dataset_name} epoch={epoch} loss={loss_sum / max(steps, 1):.6f} "
-            f"mrr={metrics['validation_mrr']:.6f} hit1={metrics['validation_hit1']:.6f} "
-            f"seen_mrr={metrics['validation_seen_mrr']:.6f} "
-            f"unseen_mrr={metrics['validation_unseen_mrr']:.6f} "
-            f"rule_mrr={metrics['rule_mrr']:.6f}"
+            f"future_rule_acc={metrics['future_rule_acc']:.6f} "
+            f"future_residual_acc={metrics['future_residual_acc']:.6f} "
+            f"future_fused_acc={metrics['future_fused_acc']:.6f} "
+            f"future_eval_loss={metrics['future_eval_loss']:.6f}"
         )
-        if metrics["validation_mrr"] > best_mrr + 1e-12:
-            best_mrr = metrics["validation_mrr"]
-            best_scores = scores
-            best_rule_scores = rule_scores
-            best_metrics = metrics
+        if metrics["future_fused_acc"] > best_score + 1e-12:
+            best_score = metrics["future_fused_acc"]
             save_model(best_path, model, {
                 "dataset_name": dataset_name,
-                "feature_dim": len(FEATURE_NAMES),
-                "query_dim": len(QUERY_FEATURE_NAMES),
-                "node_count": int(builder.node_count),
-                "node_values": builder.node_values,
+                "feature_dim": int(x_train.shape[-1]),
                 "hidden_dim": int(args.hidden_dim),
-                "embed_dim": int(args.embed_dim),
-                "history_len": int(args.history_len),
                 "feature_names": FEATURE_NAMES,
-                "query_feature_names": QUERY_FEATURE_NAMES,
                 "mean": mean.tolist(),
                 "std": std.tolist(),
-                "query_mean": query_mean.tolist(),
-                "query_std": query_std.tolist(),
-                "training_mode": "craft_rerank_listwise",
+                "fuse_rule": float(args.fuse_rule),
+                "gamma": float(args.gamma),
+                "training_mode": "future_edge_intensity",
+                "zero_row_context": True,
                 "history_ratio": float(args.history_ratio),
                 "negatives": int(args.negatives),
                 "sample_edges": int(args.sample_edges),
-                "train_queries": int(len(train_queries)),
-                "eval_queries": int(len(eval_queries)),
-                "eval_cache_path": str(eval_cache_path),
-                "use_craft_model": bool(metrics["validation_mrr"] > metrics["rule_mrr"]),
+                "train_pairs": int(len(train_raw)),
+                "eval_pairs": int(len(eval_raw)),
                 **metrics,
+                "use_edge_mlp": bool(metrics["future_fused_acc"] > metrics["future_rule_acc"]),
             })
-            save_eval_cache(eval_cache_path, best_scores, best_rule_scores, eval_targets, eval_seen, eval_queries)
-
-    print(f"{dataset_name}: saved {best_path} best_validation_mrr={best_mrr:.6f}")
+    print(f"{dataset_name}: saved {best_path} best_future_fused_acc={best_score:.6f}")
 
 
 def find_dataset_names(data_dir, dataset_arg):
@@ -372,20 +267,19 @@ def main():
     parser.add_argument("--model-dir", default="models_edge")
     parser.add_argument("--dataset", default="all", help="all or comma-separated dataset names")
     parser.add_argument("--epochs", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--hidden-dim", type=int, default=128)
-    parser.add_argument("--embed-dim", type=int, default=64)
-    parser.add_argument("--history-len", type=int, default=60)
-    parser.add_argument("--lr", type=float, default=0.0005)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--hidden-dim", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
-    parser.add_argument("--pairwise-weight", type=float, default=0.15)
-    parser.add_argument("--negatives", type=int, default=32)
+    parser.add_argument("--fuse-rule", type=float, default=1.0)
+    parser.add_argument("--gamma", type=float, default=0.15)
+    parser.add_argument("--negatives", type=int, default=8)
     parser.add_argument("--history-ratio", type=float, default=0.8)
     parser.add_argument("--eval-ratio", type=float, default=0.2)
     parser.add_argument("--sample-edges", type=int, default=0)
-    parser.add_argument("--recent-limit", type=int, default=120)
-    parser.add_argument("--transition-limit", type=int, default=300)
-    parser.add_argument("--popular-limit", type=int, default=5000)
+    parser.add_argument("--recent-limit", type=int, default=100)
+    parser.add_argument("--transition-limit", type=int, default=200)
+    parser.add_argument("--popular-limit", type=int, default=3000)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--seed-list", default="")
     parser.add_argument("--cuda", action="store_true")
