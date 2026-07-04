@@ -1,28 +1,28 @@
-# Jittor Future-Edge Fusion Ranker
+# Jittor Temporal Link Reranker
 
-This repository predicts future temporal edge intensity and ranks the 100
-official candidates for each `(src, time)` test row.
+This repository predicts future temporal links for the competition format:
+each test row provides `(src, time)` and 100 candidate destinations, and the
+submission returns one probability row per test row.
 
-The current pipeline uses a sanity-gated fusion system:
+The codebase is intentionally split by dataset behavior:
 
-- `base_intensity_v3`: statistical future-edge intensity from repeat edges,
-  recency, destination popularity, source transitions, and temporal CN/AA/RA.
-- `manual_rule`: the original robust rule prior.
-- `edge_mlp_legacy`: the previous Jittor MLP residual baseline, kept as a
-  fallback and A/B comparison.
-- `seq_nextdst`: optional Jittor next-destination sequence tower.
-- `craft_residual`: optional Jittor target-aware residual with `zero_id`
-  cold-node handling.
+- `dataset1`: repeat-heavy scene. Uses the robust statistical/rule ranker.
+- `dataset2`: new-link scene. Uses the `split` column and trains a Jittor
+  temporal recommender for next-destination ranking.
 
-Deep components are disabled when they are missing or fail validation. When a
-component is valid but weaker than the robust base/rule baselines, it is kept
-only at a reduced weight instead of being hard-zeroed.
-
-## Run
+## Entrypoints
 
 ```bash
-bash run_best.sh
+bash scripts/train_dataset1.sh
+bash scripts/train_dataset2.sh
+bash scripts/train_all.sh
 ```
+
+- `train_dataset1.sh`: trains/predicts dataset1 and writes dataset2 as all-zero
+  rows for single-scene score probing.
+- `train_dataset2.sh`: trains/predicts dataset2 and writes dataset1 as all-zero
+  rows for single-scene score probing.
+- `train_all.sh`: normal submission path; predicts both datasets.
 
 Default output:
 
@@ -32,72 +32,89 @@ result_best.zip
   dataset2.csv
 ```
 
-## Pipeline
+## File Layout
 
-1. Check or download `data_A`.
-2. Analyze data distribution into `reports/data_stats/`.
-3. Build `base_intensity_v3` artifacts.
-4. Train optional Jittor deep components and legacy MLP if Jittor is available.
-5. Run large-pool validation and time-replay validation.
-6. Select `models_v2/fusion_config.json`.
-7. Run official-candidate sanity and automatically reduce risky deep weights.
-8. Score official candidates, softmax each row, and pack `result_best.zip`.
+```text
+scripts/
+  run_specialized_pipeline.py
+  train_dataset1.sh
+  train_dataset2.sh
+  train_all.sh
 
-## Common Overrides
-
-- `RUN_LEGACY=0`: skip legacy edge MLP training.
-- `RUN_SEQ=0`: skip next-destination training.
-- `RUN_CRAFT=0`: skip CRAFT residual training.
-- `INSTALL_JITTOR=0`: do not install Jittor automatically.
-- `VAL_MAX_EDGES=2000`, `VAL_POOL_SIZE=500`: broad mixed-pool validation
-  budget for the future-edge intensity objective.
-- `VAL_CANDIDATE_MODE=mixed`: keep the main validation aligned with scoring
-  arbitrary `(src, dst, time)` points. `test-prior` remains available only as
-  an optional diagnostic.
-- `REPLAY_POOL_SIZE=500`, `REPLAY_CANDIDATE_MODE=mixed`: time-replay validation
-  budget and sampling mode. Components with failed replay blocks are reduced or
-  disabled during fusion selection.
-- `SANITY_MAX_ROWS=5000`: official-candidate sanity sample size; set `0` for full.
-- `PREDICT_MAX_ROWS=0`: final prediction row limit; keep `0` for real
-  submissions, set a small value for shell smoke tests.
-- `EDGE_NEGATIVE_MODE=mixed`: legacy MLP negative sampler mode.
-- `LEGACY_VALIDATE_TOP_K=3`: validate the top legacy MLP candidates selected
-  by training metadata, then choose among those by mixed validation metrics.
-- `REQUIRE_LEARNED=1`: fail the full run if every learned component has zero
-  usable fusion weight for any dataset, including after official-candidate
-  sanity adjustments. Set `0` only for local smoke tests or intentional
-  rule/base-only probes.
-- `GPU_COUNT=8`, `MAX_PARALLEL=8`, `TOTAL_CPU_THREADS=48`: default resource
-  plan for an 8-GPU / 48-core server. GPU jobs use per-GPU locks, legacy MLP
-  jobs are split by hyperparameter and dataset, and each GPU job receives
-  `CPU_THREADS_PER_JOB=ceil(TOTAL_CPU_THREADS / MAX_PARALLEL)` by default.
-- `CPU_WORKERS=2`: run dataset-level CPU stages such as validation, sanity,
-  and prediction in parallel. Each worker receives
-  `CPU_THREADS_PER_WORKER=ceil(TOTAL_CPU_THREADS / CPU_WORKERS)` by default.
-  The default worker count is `2` because the provided data has two datasets.
-- `USE_CUDA=0`, `USE_VENV=0`: run in the current CPU Python environment.
-
-Fast local probe without Jittor:
-
-```bash
-USE_CUDA=0 USE_VENV=0 INSTALL_JITTOR=0 RUN_LEGACY=0 \
-REQUIRE_LEARNED=0 \
-SEQ_SAMPLE_EDGES=100 CRAFT_SAMPLE_EDGES=100 \
-VAL_MAX_EDGES=20 VAL_POOL_SIZE=50 \
-REPLAY_BLOCKS=3 REPLAY_MAX_EVENTS=10 REPLAY_POOL_SIZE=50 \
-SANITY_MAX_ROWS=100 PREDICT_MAX_ROWS=100 bash run_best.sh
+src/
+  common/        # CSV/zip/report helpers
+  dataset1/      # repeat/rule ranker
+  dataset2/      # Jittor temporal recommender
+  data_loader.py
+  metrics.py
+  feature_builder.py
+  rule_ranker_v2.py
+  base_intensity_v3.py
 ```
 
-Quick submission check:
+Generated outputs are ignored by git:
+
+```text
+artifacts*/
+reports/
+submission*/
+*.zip
+```
+
+## Dataset1
+
+Dataset1 keeps the conservative `base_intensity_v3 + manual_rule` stack. This
+scene has a high repeat-edge signal, so the pipeline avoids slow residual deep
+components that previously collapsed back to rule scoring.
+
+## Dataset2
+
+Dataset2 is treated as a new-link temporal recommendation problem.
+
+When the `split` column exists:
+
+- `split=0` is the local training window.
+- `split=1` is the local validation window.
+- final submission training can retrain on all training rows.
+
+The Jittor model learns source embeddings, destination embeddings, a compact
+source-history state, and time-gap features. The main objective is destination
+softmax over all known destinations or a large sampled approximation. A small
+BPR term is used only as an auxiliary ranking loss.
+
+Split validation reports bucketed MRR for:
+
+- repeated pairs;
+- new pairs;
+- cold destinations that are not in the training destination vocabulary.
+
+Prediction fuses the Jittor model score with the dataset2 rule/statistical
+score, so repeated-pair signals, destination popularity, source recent
+preference, and cold-destination downweighting remain active.
+
+Useful overrides:
 
 ```bash
-python - <<'PY'
-import csv, zipfile
-with zipfile.ZipFile("result_best.zip") as zf:
-    for name in sorted(zf.namelist()):
-        with zf.open(name) as f:
-            row = next(csv.reader(line.decode("utf-8") for line in f))
-        vals = [float(x) for x in row]
-        print(name, len(vals), min(vals), max(vals), sum(vals))
-PY
+D2_SOFTMAX_MODE=sampled|full
+D2_NEG_COUNT=4096
+D2_EPOCHS=6
+D2_BATCH_SIZE=512
+D2_BPR_WEIGHT=0.05
+D2_FUSION_MODEL_WEIGHT=1.0
+D2_FUSION_RULE_WEIGHT=0.25
+D2_VALIDATE_BEFORE_FINAL=0|1
+FINAL_TRAIN=0|1
+```
+
+Example:
+
+```bash
+D2_SOFTMAX_MODE=full D2_EPOCHS=4 bash scripts/train_dataset2.sh
+```
+
+## Local Checks
+
+```bash
+python -m compileall src scripts
+python scripts/run_specialized_pipeline.py --target dataset1 --zero-other 1 --max-rows 10 --cuda 0
 ```

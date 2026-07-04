@@ -1,83 +1,103 @@
-# Main Branch Solution Notes
+# Solution Notes
 
-## Goal
+## Core Objective
 
-The main branch is a conservative fusion ranker for the official 100-candidate
-future-edge task. It keeps the strong rule/statistical baseline as the anchor
-and adds Jittor residual components only when validation and sanity checks allow
-them.
+For each test row `(src, time, candidate_1..candidate_100)`, the model scores
+the 100 candidate destinations, normalizes the row to probabilities, and writes
+the CSV required by the judge. Since the judge uses MRR, ranking quality is the
+main objective; probability calibration is secondary.
 
-## Pipeline
+## Why the Pipeline Is Split
 
-`run_best.sh` is the entrypoint:
+Dataset1 and dataset2 have different structure:
 
-```text
-data check/download
-  -> data diagnostics
-  -> base intensity artifacts
-  -> legacy edge MLP grid
-  -> seq_nextdst and craft_residual training
-  -> mixed large-pool validation
-  -> mixed time replay
-  -> fusion config selection
-  -> official-candidate sanity adjustment
-  -> prediction and result_best.zip
-```
+- Dataset1 is repeat-heavy. Historical pair and recency rules are strong.
+- Dataset2 is mostly a future new-pair task. Its `split` column provides a
+  clean chronological train/validation boundary.
 
-## Validation
+A single generic selector pushed both scenes back toward the same rule score and
+made slow deep components expensive without improving ranking. The current
+project therefore uses dataset-specific training paths.
 
-Validation defaults to a broad mixed negative pool with 500 candidates per row.
-This keeps the main gate aligned with the intended future-edge intensity
-objective: every `(src, dst, time)` should receive a meaningful score, not only
-destinations from a constructed 100-candidate row.
-
-`test-prior` candidate sampling still exists as an optional diagnostic and as a
-sanity lens for the official candidate distribution, but it is not the default
-model-selection gate.
-
-Deep components are handled as follows:
-
-- missing or validation-failed components get weight `0`;
-- valid but weaker learned components are reduced instead of hard-zeroed;
-- learned components with failed time-replay blocks are reduced or disabled;
-- sanity failures reduce risky learned components and increase cold penalty
-  when predicted unseen top candidates are too frequent.
-
-The full `run_best.sh` path defaults to `REQUIRE_LEARNED=1`. If every learned
-component collapses to zero usable weight for a dataset, the run fails instead
-of silently producing a rule/base-only submission. The same check is applied
-after official-candidate sanity adjustments.
-
-## Resource Plan
-
-The default script targets an 8-GPU, 48-core server:
+## Current Data Flow
 
 ```text
-GPU_COUNT=8
-MAX_PARALLEL=8
-TOTAL_CPU_THREADS=48
-CPU_THREADS_PER_JOB=ceil(TOTAL_CPU_THREADS / MAX_PARALLEL)
-CPU_THREADS_PER_WORKER=ceil(TOTAL_CPU_THREADS / CPU_WORKERS)
+data_A/
+  dataset1/
+  dataset2/
+
+scripts/train_dataset1.sh
+  -> train dataset1 rule/base artifact
+  -> predict dataset1
+  -> write dataset2 all-zero probe rows
+  -> pack result_best.zip
+
+scripts/train_dataset2.sh
+  -> train dataset2 temporal recommender
+  -> predict dataset2
+  -> write dataset1 all-zero probe rows
+  -> pack result_best.zip
+
+scripts/train_all.sh
+  -> train/predict both datasets
+  -> pack official result_best.zip
 ```
 
-GPU jobs use lock directories so one logical job occupies one visible GPU until
-it exits. This avoids the previous round-robin issue where a new job could be
-placed on a still-busy GPU while another GPU was idle.
+## Dataset1 Method
 
-The legacy MLP grid is split by hyperparameter and dataset, then scheduled
-across the 8 GPUs. `seq_nextdst` and `craft_residual` are also split by dataset
-and launched as independent GPU jobs, so the script avoids serially training
-both datasets in one process when there is free GPU capacity.
+Dataset1 uses `base_intensity_v3 + manual_rule` with a cold-destination penalty.
+This preserves the high repeat-edge score and avoids unused deep residual
+components.
 
-CPU-only stages use `CPU_WORKERS=2` by default to process the two datasets in
-parallel during validation, sanity checks, and prediction. Each worker gets an
-explicit BLAS/Jittor thread budget so the 48-core server is used deliberately
-without uncontrolled oversubscription.
+## Dataset2 Method
 
-## Current Caveat
+Dataset2 uses a Jittor temporal recommender:
 
-The main branch is still a rule-first fusion system, not a fully calibrated
-probabilistic intensity model. Mixed-pool and time-replay validation reduce the
-risk of fitting one local candidate distribution, but they are still proxies for
-the hidden judge. Learned components should only be trusted when they survive
-both broad validation and time stability checks.
+```text
+score(src, dst, time) =
+  dot(user_state(src, time), dst_embedding)
+  + dst_bias
+```
+
+`user_state` combines:
+
+- source id embedding;
+- recent destination-history embedding;
+- simple time position/gap/history-count features.
+
+Training:
+
+- validation mode: train on `split=0`, validate on `split=1`;
+- final mode: retrain on all training rows;
+- objective: full known-destination softmax or large sampled softmax;
+- auxiliary loss: small BPR term against the hardest sampled negative in the
+  batch candidate set.
+
+Validation reports full-known-destination MRR on the held-out split, split into
+`overall`, `repeated`, `new_pair`, and `cold_dst` buckets. Cold destinations not
+present in the training destination vocabulary are counted explicitly with MRR
+0 instead of being silently dropped. This checks whether the model is learning
+next-destination ranking, not only beating a handcrafted negative sampler.
+
+Prediction does not use the deep model alone. The final dataset2 score is:
+
+```text
+zscore(jittor_model_score) * D2_FUSION_MODEL_WEIGHT
++ zscore(rule_stat_score) * D2_FUSION_RULE_WEIGHT
+```
+
+The rule/statistical score keeps repeated-pair behavior, destination
+popularity, source recent preference, and cold-destination downweighting in the
+final ranker.
+
+## Performance Decisions
+
+- Old zero-weight deep components were removed with the old generic stack.
+- Probe all-zero CSVs are written row-by-row to avoid large zero matrices.
+- Dataset predictions are written in probability chunks, so the pipeline does
+  not keep the full test score matrix in memory.
+- Dataset2 sampled softmax uses shared batch negatives and configurable
+  `D2_NEG_COUNT`/`D2_BATCH_SIZE` to fit 16G GPUs.
+- BPR is auxiliary only and defaults to `D2_BPR_WEIGHT=0.05`.
+- Dataset2 rule fusion defaults to `D2_FUSION_RULE_WEIGHT=0.25`.
+- Full softmax remains available through `D2_SOFTMAX_MODE=full`.
