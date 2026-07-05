@@ -36,6 +36,7 @@ result_best.zip
 
 ```text
 scripts/
+  dataset2_split_eval.py
   run_specialized_pipeline.py
   train_dataset1.sh
   train_dataset2.sh
@@ -78,19 +79,23 @@ When the `split` column exists:
 - final submission training can retrain on all training rows.
 
 The Jittor model learns source embeddings, destination embeddings, a compact
-source-history state, and time-gap features. The main objective is destination
-softmax over all known destinations or a large sampled approximation. A small
-BPR term is used only as an auxiliary ranking loss.
+source-history state, recent-destination sequence features, position weights,
+and time-gap features. The main objective is destination softmax over all known
+destinations or a corrected large sampled approximation. A small BPR term is
+used only as an auxiliary ranking loss.
 
 Split validation reports bucketed MRR for:
 
 - repeated pairs;
 - new pairs;
 - cold destinations that are not in the training destination vocabulary.
+- cold sources and sources with no usable history.
 
 Prediction fuses the Jittor model score with the dataset2 rule/statistical
-score, so repeated-pair signals, destination popularity, source recent
-preference, and cold-destination downweighting remain active.
+score, so destination popularity and source recent preference remain active.
+The default rule weight is deliberately small on dataset2 because the local
+held-out positives are new pairs; repeated-pair rules are kept as weak evidence,
+not as the dominant signal.
 
 Useful overrides:
 
@@ -98,10 +103,14 @@ Useful overrides:
 D2_SOFTMAX_MODE=sampled|full
 D2_NEG_COUNT=4096
 D2_EPOCHS=6
-D2_BATCH_SIZE=512
+D2_BATCH_SIZE=2048
 D2_BPR_WEIGHT=0.05
+D2_HARD_NEGATIVE_COUNT=512
+D2_SAMPLED_CORRECTION=1
+D2_RERANK_NEG_COUNT=64
+D2_RERANK_WEIGHT=0.10
 D2_FUSION_MODEL_WEIGHT=1.0
-D2_FUSION_RULE_WEIGHT=0.25
+D2_FUSION_RULE_WEIGHT=0.10
 D2_VALIDATE_BEFORE_FINAL=0|1
 FINAL_TRAIN=0|1
 ```
@@ -118,3 +127,31 @@ D2_SOFTMAX_MODE=full D2_EPOCHS=4 bash scripts/train_dataset2.sh
 python -m compileall src scripts
 python scripts/run_specialized_pipeline.py --target dataset1 --zero-other 1 --max-rows 10 --cuda 0
 ```
+
+## Dataset2 Split Evaluation
+
+Run the split evaluator before trusting any dataset2 model change:
+
+```bash
+python scripts/dataset2_split_eval.py \
+  --modes pop,recent,rule_only \
+  --eval-sets pseudo100,hard-pseudo100 \
+  --max-events 20000
+```
+
+After a dataset2 artifact exists, compare all scoring paths:
+
+```bash
+python scripts/dataset2_split_eval.py \
+  --modes rule_only,model_only,fusion,pop,recent \
+  --eval-sets all-dst,pseudo100,hard-pseudo100 \
+  --cuda
+```
+
+The evaluator writes bucketed MRR for `overall`, `repeated`, `new_pair`,
+`cold_dst`, `cold_src`, and `no_history_src`. Validation is frozen to `split=0`
+history; skipped model samples are counted in the `overall` denominator with
+MRR 0. Full `rule_only` over `all-dst` is exact but slow because it scores every
+known destination. `train_dataset2.sh` keeps validation-before-final on by
+default for probing; `train_all.sh` turns it off by default to avoid training
+dataset2 twice during the final packaging run.

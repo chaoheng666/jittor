@@ -63,6 +63,10 @@ def train_selected(args, datasets, artifact_root):
                 lr=args.d2_lr,
                 weight_decay=args.d2_weight_decay,
                 bpr_weight=args.d2_bpr_weight,
+                hard_negative_count=args.d2_hard_negative_count,
+                sampled_correction=parse_bool(args.d2_sampled_correction),
+                rerank_neg_count=args.d2_rerank_neg_count,
+                rerank_weight=args.d2_rerank_weight,
                 fusion_model_weight=args.d2_fusion_model_weight,
                 fusion_rule_weight=args.d2_fusion_rule_weight,
                 valid_max_events=args.d2_valid_max_events,
@@ -84,6 +88,10 @@ def train_selected(args, datasets, artifact_root):
             lr=args.d2_lr,
             weight_decay=args.d2_weight_decay,
             bpr_weight=args.d2_bpr_weight,
+            hard_negative_count=args.d2_hard_negative_count,
+            sampled_correction=parse_bool(args.d2_sampled_correction),
+            rerank_neg_count=args.d2_rerank_neg_count,
+            rerank_weight=args.d2_rerank_weight,
             fusion_model_weight=args.d2_fusion_model_weight,
             fusion_rule_weight=args.d2_fusion_rule_weight,
             valid_max_events=args.d2_valid_max_events,
@@ -147,7 +155,7 @@ def main():
     parser.add_argument("--zero-unknown-datasets", default="0")
     parser.add_argument("--final-train", default="1")
     parser.add_argument("--cuda", default="1")
-    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--d2-softmax-mode", choices=["sampled", "full"], default="sampled")
@@ -157,12 +165,16 @@ def main():
     parser.add_argument("--d2-hidden-dim", type=int, default=192)
     parser.add_argument("--d2-dropout", type=float, default=0.1)
     parser.add_argument("--d2-epochs", type=int, default=6)
-    parser.add_argument("--d2-batch-size", type=int, default=512)
+    parser.add_argument("--d2-batch-size", type=int, default=2048)
     parser.add_argument("--d2-lr", type=float, default=0.001)
     parser.add_argument("--d2-weight-decay", type=float, default=1e-6)
     parser.add_argument("--d2-bpr-weight", type=float, default=0.05)
+    parser.add_argument("--d2-hard-negative-count", type=int, default=512)
+    parser.add_argument("--d2-sampled-correction", default="1")
+    parser.add_argument("--d2-rerank-neg-count", type=int, default=64)
+    parser.add_argument("--d2-rerank-weight", type=float, default=0.10)
     parser.add_argument("--d2-fusion-model-weight", type=float, default=1.0)
-    parser.add_argument("--d2-fusion-rule-weight", type=float, default=0.25)
+    parser.add_argument("--d2-fusion-rule-weight", type=float, default=0.10)
     parser.add_argument("--d2-valid-max-events", type=int, default=20000)
     parser.add_argument("--d2-validate-before-final", default="1")
     args = parser.parse_args()
@@ -175,6 +187,9 @@ def main():
     args.d2_epochs = require_positive_int("--d2-epochs", args.d2_epochs)
     args.d2_batch_size = require_positive_int("--d2-batch-size", args.d2_batch_size)
     args.d2_bpr_weight = require_non_negative_float("--d2-bpr-weight", args.d2_bpr_weight)
+    args.d2_hard_negative_count = max(int(args.d2_hard_negative_count), 0)
+    args.d2_rerank_neg_count = max(int(args.d2_rerank_neg_count), 0)
+    args.d2_rerank_weight = require_non_negative_float("--d2-rerank-weight", args.d2_rerank_weight)
     args.d2_fusion_model_weight = require_non_negative_float(
         "--d2-fusion-model-weight",
         args.d2_fusion_model_weight,
