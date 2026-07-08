@@ -23,3 +23,13 @@ competition_scores/
 reports/
 artifacts/
 artifacts*/
+logs/
+server_downloads/
+tmp_*
+official_baseline_tmp/
+probe_zero_versions/
+unknown_probe_outputs/
+rebuild_v*_results/
+kernel_meta_temp_*/
+smoke_artifacts/
+smoke_reports/
