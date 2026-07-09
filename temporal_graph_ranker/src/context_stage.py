@@ -1,5 +1,7 @@
 import json
 import math
+import multiprocessing as mp
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -56,6 +58,24 @@ CONTEXT_FEATURE_NAMES = FEATURE_NAMES + [
     "recent_pop_x_source_activity",
     "profile_x_source_activity",
 ]
+
+_SEQ_BASE = None
+_SEQ_SRC = None
+_SEQ_DST = None
+_SEQ_CONTEXT = None
+_SEQ_LEN = None
+
+
+def _append_sequence_bounds_worker(payload: tuple) -> str:
+    shard, start, end, out_dir, prefix = payload
+    if _SEQ_BASE is None or _SEQ_SRC is None or _SEQ_DST is None or _SEQ_CONTEXT is None or _SEQ_LEN is None:
+        raise RuntimeError("fork worker did not inherit sequence feature context")
+    augmented = _append_sequence_features(
+        _SEQ_BASE[start:end], _SEQ_SRC[start:end], _SEQ_DST[start:end], _SEQ_CONTEXT, src_seq_len=_SEQ_LEN
+    ).astype(np.float16)
+    path = Path(out_dir) / f"{prefix}_{int(shard):03d}.npy"
+    np.save(path, augmented)
+    return str(path)
 
 
 def _fit_model(edges: Sequence[Tuple[int, int, int]], test_rows, out_path: Path, seed: int, svd_dim: int) -> GraphFeatureModel:
@@ -167,6 +187,40 @@ def _append_sequence_features(base: np.ndarray, src_ids: np.ndarray, dst_ids: np
         extra[i, :, 12] = base[i, :, FEATURE_NAMES.index("recent_pop")] * source_activity
         extra[i, :, 13] = base[i, :, FEATURE_NAMES.index("profile")] * source_activity
     return np.concatenate([base.astype(np.float32, copy=False), extra], axis=2).astype(np.float32, copy=False)
+
+
+def append_sequence_features_parallel(
+    base: np.ndarray,
+    src_ids: np.ndarray,
+    dst_ids: np.ndarray,
+    ctx: SequenceContext,
+    src_seq_len: int,
+    out_dir: Path,
+    prefix: str,
+    workers: int,
+) -> np.ndarray:
+    """Append 14 sequence features in parallel without copying the graph model."""
+    workers = max(1, min(int(workers), len(base), max(1, (os.cpu_count() or 1) - 16)))
+    if workers == 1 or os.name != "posix":
+        return _append_sequence_features(base, src_ids, dst_ids, ctx, src_seq_len=src_seq_len).astype(np.float16)
+    out_dir = ensure_dir(out_dir)
+    for old in out_dir.glob(f"{prefix}_*.npy"):
+        old.unlink()
+    global _SEQ_BASE, _SEQ_SRC, _SEQ_DST, _SEQ_CONTEXT, _SEQ_LEN
+    _SEQ_BASE = base
+    _SEQ_SRC = src_ids
+    _SEQ_DST = dst_ids
+    _SEQ_CONTEXT = ctx
+    _SEQ_LEN = int(src_seq_len)
+    bounds = np.linspace(0, len(base), workers + 1, dtype=np.int64)
+    tasks = [
+        (shard, int(bounds[shard]), int(bounds[shard + 1]), str(out_dir), prefix)
+        for shard in range(workers)
+        if int(bounds[shard + 1]) > int(bounds[shard])
+    ]
+    with mp.get_context("fork").Pool(processes=len(tasks), maxtasksperchild=1) as pool:
+        paths = pool.map(_append_sequence_bounds_worker, tasks)
+    return np.concatenate([np.load(path, mmap_mode="r") for path in paths], axis=0).astype(np.float16, copy=False)
 
 
 def _hard_lists_from_edges(
@@ -329,7 +383,9 @@ def build_context_features(args) -> dict:
     )
     print("[ranker] appending train sequence and audience features", flush=True)
     train_ctx = SequenceContext(block_model, history_edges, dst_seq_len=int(args.dst_seq_len))
-    train_x = _append_sequence_features(train_x.astype(np.float32), train_src, train_dst, train_ctx, src_seq_len=int(args.src_seq_len)).astype(np.float16)
+    train_x = append_sequence_features_parallel(
+        train_x, train_src, train_dst, train_ctx, int(args.src_seq_len), artifacts / "context_features", "hard_train", int(args.workers)
+    )
     print(f"[ranker] building train test-template candidates rows={len(template_train_edges)}", flush=True)
     template_train_x, template_train_src, template_train_dst, template_train_y, template_train_meta = _template_lists_from_edges(
         block_model,
@@ -340,9 +396,16 @@ def build_context_features(args) -> dict:
         int(args.workers),
         int(args.seed) + 7,
     )
-    template_train_x = _append_sequence_features(
-        template_train_x, template_train_src, template_train_dst, train_ctx, src_seq_len=int(args.src_seq_len)
-    ).astype(np.float16)
+    template_train_x = append_sequence_features_parallel(
+        template_train_x,
+        template_train_src,
+        template_train_dst,
+        train_ctx,
+        int(args.src_seq_len),
+        artifacts / "context_features",
+        "template_train",
+        int(args.workers),
+    )
     train_x = np.concatenate([train_x, template_train_x], axis=0)
     train_src = np.concatenate([train_src, template_train_src], axis=0)
     train_dst = np.concatenate([train_dst, template_train_dst], axis=0)
@@ -362,7 +425,9 @@ def build_context_features(args) -> dict:
     )
     print("[ranker] appending validation sequence and audience features", flush=True)
     valid_ctx = SequenceContext(valid_model, split0, dst_seq_len=int(args.dst_seq_len))
-    valid_x = _append_sequence_features(valid_x.astype(np.float32), valid_src, valid_dst, valid_ctx, src_seq_len=int(args.src_seq_len)).astype(np.float16)
+    valid_x = append_sequence_features_parallel(
+        valid_x, valid_src, valid_dst, valid_ctx, int(args.src_seq_len), artifacts / "context_features", "hard_valid", int(args.workers)
+    )
     print(f"[ranker] building validation test-template candidates rows={len(template_valid_edges)}", flush=True)
     template_valid_x, template_valid_src, template_valid_dst, template_valid_y, template_valid_meta = _template_lists_from_edges(
         valid_model,
@@ -373,9 +438,16 @@ def build_context_features(args) -> dict:
         int(args.workers),
         int(args.seed) + 23,
     )
-    template_valid_x = _append_sequence_features(
-        template_valid_x, template_valid_src, template_valid_dst, valid_ctx, src_seq_len=int(args.src_seq_len)
-    ).astype(np.float16)
+    template_valid_x = append_sequence_features_parallel(
+        template_valid_x,
+        template_valid_src,
+        template_valid_dst,
+        valid_ctx,
+        int(args.src_seq_len),
+        artifacts / "context_features",
+        "template_valid",
+        int(args.workers),
+    )
     valid_x = np.concatenate([valid_x, template_valid_x], axis=0)
     valid_src = np.concatenate([valid_src, template_valid_src], axis=0)
     valid_dst = np.concatenate([valid_dst, template_valid_dst], axis=0)
@@ -486,7 +558,16 @@ def predict_context_ranker(args) -> dict:
     test_dst = np.asarray([r.candidates for r in test_rows], dtype=np.int64)
     print("[ranker] appending test sequence and audience features", flush=True)
     inference_ctx = SequenceContext(inference_model, [(r.src, r.dst, r.time) for r in read_train(dataset_dir(data_dir, "dataset2") / "train.csv")], dst_seq_len=int(args.dst_seq_len))
-    features = _append_sequence_features(features.astype(np.float32), test_src, test_dst, inference_ctx, src_seq_len=int(args.src_seq_len))
+    features = append_sequence_features_parallel(
+        features,
+        test_src,
+        test_dst,
+        inference_ctx,
+        int(args.src_seq_len),
+        artifacts / "context_features",
+        "test",
+        int(args.workers),
+    )
     baseline = _baseline_logits(feature_logits, mlp_logits, BASELINE_MLP_WEIGHT)
 
     model_report = _read_json(reports / "model_report.json")
