@@ -1,4 +1,3 @@
-import argparse
 import json
 import math
 import shutil
@@ -281,7 +280,7 @@ def build_context_features(args) -> dict:
     reports = ensure_dir(_as_path(args.reports))
     ds_dir = dataset_dir(data_dir, "dataset2")
     test_rows = read_test(ds_dir / "test.csv")
-    split0, split1, split_meta = split_edges(ds_dir, final_train=False, prefer_official=True)
+    split0, split1, split_meta = split_edges(ds_dir, all_train=False, prefer_official=True)
     split0 = sorted(split0, key=lambda x: (x[2], x[0], x[1]))
     split1 = sorted(split1, key=lambda x: (x[2], x[0], x[1]))
     if int(args.fit_edge_limit) > 0:
@@ -308,7 +307,7 @@ def build_context_features(args) -> dict:
     model_dir = ensure_dir(artifacts / "models")
     block_model_path = model_dir / "history_graph.pkl"
     valid_model_path = model_dir / "validation_graph.pkl"
-    final_model_path = model_dir / "inference_graph.pkl"
+    inference_model_path = model_dir / "inference_graph.pkl"
     print(f"[ranker] fitting history graph edges={len(history_edges)}", flush=True)
     block_model = _fit_model(history_edges, test_rows, block_model_path, int(args.seed), int(args.svd_dim))
     print(f"[ranker] fitting validation graph edges={len(split0)}", flush=True)
@@ -391,7 +390,7 @@ def build_context_features(args) -> dict:
     all_edges = [(r.src, r.dst, r.time) for r in all_rows]
     if int(args.fit_edge_limit) > 0:
         all_edges = all_edges[: min(len(all_edges), int(args.fit_edge_limit))]
-    _fit_model(all_edges, test_rows, final_model_path, int(args.seed) + 2, int(args.svd_dim))
+    _fit_model(all_edges, test_rows, inference_model_path, int(args.seed) + 2, int(args.svd_dim))
 
     valid_feature_logits = score_feature_tensor(valid_x[:, :, : len(FEATURE_NAMES)].astype(np.float32), weights)
     report = {
@@ -413,7 +412,7 @@ def build_context_features(args) -> dict:
         "valid_path": str(valid_path),
         "block_model": str(block_model_path),
         "valid_model": str(valid_model_path),
-        "inference_model": str(final_model_path),
+        "inference_model": str(inference_model_path),
         "feature_valid_mrr": tie_aware_mrr(valid_feature_logits, valid_y),
         "label_check": {
             "train_min": int(train_y.min()),
@@ -474,20 +473,20 @@ def predict_context_ranker(args) -> dict:
     reports = ensure_dir(_as_path(args.reports))
     build = _read_json(reports / "build_report.json")
     test_rows = read_test(dataset_dir(data_dir, "dataset2") / "test.csv")
-    final_model_path = Path(build["inference_model"])
+    inference_model_path = Path(build["inference_model"])
     if str(args.reuse_baseline_features) == "1":
         features, feature_logits, mlp_logits = _load_baseline_test_parts(baseline_root)
     else:
-        features = _feature_tensor_sharded(final_model_path, test_rows, artifacts / "test_features", int(args.workers))
+        features = _feature_tensor_sharded(inference_model_path, test_rows, artifacts / "test_features", int(args.workers))
         weights = _load_baseline_weights(baseline_root)
         feature_logits = score_feature_tensor(features, weights).astype(np.float32)
         _, _, mlp_logits = _load_baseline_test_parts(baseline_root)
-    final_model = GraphFeatureModel.load(final_model_path)
+    inference_model = GraphFeatureModel.load(inference_model_path)
     test_src = np.asarray([r.src for r in test_rows], dtype=np.int64)
     test_dst = np.asarray([r.candidates for r in test_rows], dtype=np.int64)
     print("[ranker] appending test sequence and audience features", flush=True)
-    final_ctx = SequenceContext(final_model, [(r.src, r.dst, r.time) for r in read_train(dataset_dir(data_dir, "dataset2") / "train.csv")], dst_seq_len=int(args.dst_seq_len))
-    features = _append_sequence_features(features.astype(np.float32), test_src, test_dst, final_ctx, src_seq_len=int(args.src_seq_len))
+    inference_ctx = SequenceContext(inference_model, [(r.src, r.dst, r.time) for r in read_train(dataset_dir(data_dir, "dataset2") / "train.csv")], dst_seq_len=int(args.dst_seq_len))
+    features = _append_sequence_features(features.astype(np.float32), test_src, test_dst, inference_ctx, src_seq_len=int(args.src_seq_len))
     baseline = _baseline_logits(feature_logits, mlp_logits, BASELINE_MLP_WEIGHT)
 
     model_report = _read_json(reports / "model_report.json")
@@ -507,15 +506,15 @@ def predict_context_ranker(args) -> dict:
         "shape": list(context_logits.shape),
         "reuse_baseline_features": str(args.reuse_baseline_features),
         "top1_change_vs_baseline": top1_change(baseline, context_logits),
-        "baseline_top1": top1_stats(baseline, test_rows, final_model),
-        "context_top1": top1_stats(context_logits, test_rows, final_model),
+        "baseline_top1": top1_stats(baseline, test_rows, inference_model),
+        "context_top1": top1_stats(context_logits, test_rows, inference_model),
     }
     dump_json(reports / "predict_report.json", report)
     print(json.dumps(report, indent=2, ensure_ascii=False)[:5000], flush=True)
     return report
 
 
-def package_final_result(args) -> dict:
+def package_submission(args) -> dict:
     baseline_root = _as_path(args.baseline_root)
     artifacts = _as_path(args.artifacts)
     reports = ensure_dir(_as_path(args.reports))
@@ -540,7 +539,6 @@ def package_final_result(args) -> dict:
     manifest = {
         name: {
             "zip": str(zip_path),
-            "public_score": 1.2829 if abs(blend_weight - 0.10) < 1e-12 else None,
             "blend_weight": blend_weight,
             "dataset1": validate_csv(d1, 61051),
             "dataset2": d2_check,
@@ -551,61 +549,3 @@ def package_final_result(args) -> dict:
     print(f"packed {name} {manifest[name]}", flush=True)
     dump_json(reports / "submission_manifest.json", manifest)
     return manifest
-
-
-def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser()
-    p.add_argument("--data-dir", default="data_A")
-    p.add_argument("--baseline-root", default="baseline_artifacts")
-    p.add_argument("--artifacts", default="artifacts")
-    p.add_argument("--reports", default="reports")
-    p.add_argument("--submission", default="submission")
-    p.add_argument("--seed", type=int, default=3026)
-    p.add_argument("--workers", type=int, default=12)
-    p.add_argument("--history-frac", type=float, default=0.70)
-    p.add_argument("--train-rows", type=int, default=500000)
-    p.add_argument("--valid-rows", type=int, default=80000)
-    p.add_argument("--max-pool", type=int, default=700)
-    p.add_argument("--svd-dim", type=int, default=128)
-    p.add_argument("--fit-edge-limit", type=int, default=0)
-    p.add_argument("--src-seq-len", type=int, default=64)
-    p.add_argument("--dst-seq-len", type=int, default=64)
-    p.add_argument("--seeds", default="3101,3102,3103")
-    p.add_argument("--hidden", type=int, default=256)
-    p.add_argument("--epochs", type=int, default=8)
-    p.add_argument("--batch-size", type=int, default=512)
-    p.add_argument("--predict-batch-size", type=int, default=2048)
-    p.add_argument("--lr", type=float, default=8e-4)
-    p.add_argument("--reuse-baseline-features", default="0")
-    p.add_argument("--blend-weight", type=float, default=0.10)
-    p.add_argument("--output-name", default="result_final_blend_0p10")
-    sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("build")
-    sub.add_parser("train")
-    sub.add_parser("predict")
-    sub.add_parser("package")
-    sub.add_parser("run-all")
-    return p
-
-
-def main() -> None:
-    args = parser().parse_args()
-    if args.command == "build":
-        build_context_features(args)
-    elif args.command == "train":
-        train_context_ranker(args)
-    elif args.command == "predict":
-        predict_context_ranker(args)
-    elif args.command == "package":
-        package_final_result(args)
-    elif args.command == "run-all":
-        build_context_features(args)
-        train_context_ranker(args)
-        predict_context_ranker(args)
-        package_final_result(args)
-    else:
-        raise SystemExit(args.command)
-
-
-if __name__ == "__main__":
-    main()

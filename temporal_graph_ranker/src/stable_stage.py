@@ -58,7 +58,7 @@ def train_stable_dataset(args, dataset: str) -> dict:
     artifacts = ensure_dir(baseline_root / "artifacts")
     reports = ensure_dir(baseline_root / "reports")
     ds_dir = dataset_dir(data_dir, dataset)
-    train_edges, valid_edges, split_meta = split_edges(ds_dir, final_train=False, prefer_official=(dataset == "dataset2"))
+    train_edges, valid_edges, split_meta = split_edges(ds_dir, all_train=False, prefer_official=(dataset == "dataset2"))
     test_rows = read_test(ds_dir / "test.csv")
     model = GraphFeatureModel(
         dataset=dataset,
@@ -138,7 +138,7 @@ def predict_stable_dataset1(args) -> dict:
     artifacts = ensure_dir(baseline_root / "artifacts")
     reports = ensure_dir(baseline_root / "reports")
     ds_dir = dataset_dir(data_dir, "dataset1")
-    train_edges, _valid_edges, split_meta = split_edges(ds_dir, final_train=True)
+    train_edges, _valid_edges, split_meta = split_edges(ds_dir, all_train=True)
     test_rows = read_test(ds_dir / "test.csv")
     report = json.loads((reports / "dataset1_train_report.json").read_text(encoding="utf-8"))
     weights: Dict[str, float] = {k: float(v) for k, v in report["weights"].items()}
@@ -189,7 +189,7 @@ def predict_stable_dataset2(args) -> dict:
     artifacts = ensure_dir(baseline_root / "artifacts")
     reports = ensure_dir(baseline_root / "reports")
     ds_dir = dataset_dir(data_dir, "dataset2")
-    train_edges, _valid_edges, split_meta = split_edges(ds_dir, final_train=True)
+    train_edges, _valid_edges, split_meta = split_edges(ds_dir, all_train=True)
     test_rows = read_test(ds_dir / "test.csv")
     report = json.loads((reports / "dataset2_train_report.json").read_text(encoding="utf-8"))
     weights: Dict[str, float] = {k: float(v) for k, v in report["weights"].items()}

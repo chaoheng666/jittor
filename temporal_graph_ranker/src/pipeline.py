@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .io_data import dump_json, ensure_dir
 from .candidate_ranker import _as_path
-from .context_stage import build_context_features, package_final_result, predict_context_ranker, train_context_ranker
+from .context_stage import build_context_features, package_submission, predict_context_ranker, train_context_ranker
 from .stable_stage import build_stable_baseline, refresh_stable_mlp_logits, train_cached_stable_mlp
 
 
@@ -31,7 +31,7 @@ def _pack_one(args: Namespace, weight: float, name: Optional[str] = None) -> dic
     item_args = copy(args)
     item_args.blend_weight = float(weight)
     item_args.output_name = name or _blend_name(float(weight))
-    return package_final_result(item_args)
+    return package_submission(item_args)
 
 
 def package_sweep(args: Namespace, weights: Iterable[float]) -> dict:

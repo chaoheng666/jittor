@@ -92,7 +92,7 @@ The default ranker uses three seeds (`3101,3102,3103`), batch size 4096,
 hidden width 384, ten epochs, Adam with learning rate `8e-4`, and weight decay
 `1e-5`.  Their row-z-scored logits are averaged.
 
-## Final Fusion
+## Submission Fusion
 
 `dataset1.csv` is produced by the stable rule stage.  Dataset2 uses
 

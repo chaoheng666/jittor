@@ -1,1 +1,1 @@
-"""Final Jittor dynamic link prediction pipeline."""
+"""Independent temporal graph candidate-ranking pipeline."""

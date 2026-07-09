@@ -63,14 +63,14 @@ def train_edges(rows: Sequence[TrainRow]) -> List[Edge]:
 
 def split_edges(
     dataset_dir: Path,
-    final_train: bool = False,
+    all_train: bool = False,
     prefer_official: bool = True,
     time_valid_frac: float = 0.15,
 ) -> Tuple[List[Edge], List[Edge], dict]:
     rows = read_train(dataset_dir / "train.csv")
-    if final_train:
+    if all_train:
         return train_edges(rows), [], {
-            "strategy": "final_all_train",
+            "strategy": "all_train",
             "total_edges": len(rows),
             "train_edges": len(rows),
             "valid_edges": 0,
