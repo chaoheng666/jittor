@@ -1,0 +1,22 @@
+{
+  "submissions/quick_q4_fusion_dataset1_zero_20260709/dataset1/dataset1_result.csv": {
+    "bad_rows": 0,
+    "cols": 100,
+    "expected_rows": 61051,
+    "max_val": 0.0,
+    "min_val": 0.0,
+    "rows": 61051,
+    "sum_max": 0.0,
+    "sum_min": 0.0
+  },
+  "submissions/quick_q4_fusion_dataset1_zero_20260709/dataset2/dataset2_result.csv": {
+    "bad_rows": 0,
+    "cols": 100,
+    "expected_rows": 153420,
+    "max_val": 0.98974985,
+    "min_val": 1.259e-05,
+    "rows": 153420,
+    "sum_max": 1.0000008999999976,
+    "sum_min": 0.999999149999999
+  }
+}

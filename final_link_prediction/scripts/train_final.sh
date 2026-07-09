@@ -7,10 +7,28 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 ACTION="${ACTION:-all}"
 
 DATA_DIR="${DATA_DIR:-data_A}"
-BASELINE_ROOT="${BASELINE_ROOT:-/home/ma-user/work/baseline_artifacts}"
+BASELINE_ROOT="${BASELINE_ROOT:-baseline_artifacts}"
 ARTIFACTS="${ARTIFACTS:-artifacts}"
 REPORTS="${REPORTS:-reports}"
 SUBMISSION="${SUBMISSION:-submission}"
+
+BUILD_BASELINE="${BUILD_BASELINE:-1}"
+STABLE_SEED="${STABLE_SEED:-2026}"
+STABLE_SVD_DIM="${STABLE_SVD_DIM:-160}"
+STABLE_RECENT_LIMIT="${STABLE_RECENT_LIMIT:-160}"
+STABLE_TRANSITION_WINDOW="${STABLE_TRANSITION_WINDOW:-16}"
+STABLE_TRANSITION_TOPK="${STABLE_TRANSITION_TOPK:-384}"
+STABLE_MAX_VALID_EVENTS="${STABLE_MAX_VALID_EVENTS:-30000}"
+STABLE_SEARCH_ROUNDS="${STABLE_SEARCH_ROUNDS:-5}"
+STABLE_PREDICT_WORKERS="${STABLE_PREDICT_WORKERS:-4}"
+STABLE_PREDICT_BATCH_SIZE="${STABLE_PREDICT_BATCH_SIZE:-16384}"
+TRAIN_STABLE_MLP="${TRAIN_STABLE_MLP:-1}"
+STABLE_MLP_TRAIN_ROWS="${STABLE_MLP_TRAIN_ROWS:-80000}"
+STABLE_MLP_HIDDEN="${STABLE_MLP_HIDDEN:-192}"
+STABLE_MLP_EPOCHS="${STABLE_MLP_EPOCHS:-8}"
+STABLE_MLP_BATCH_SIZE="${STABLE_MLP_BATCH_SIZE:-256}"
+STABLE_MLP_LR="${STABLE_MLP_LR:-8e-4}"
+STABLE_MLP_OUTPUT_WEIGHT="${STABLE_MLP_OUTPUT_WEIGHT:-0.20}"
 
 SEED="${SEED:-3026}"
 WORKERS="${WORKERS:-12}"
@@ -42,6 +60,23 @@ run_final() {
     --artifacts "$ARTIFACTS" \
     --reports "$REPORTS" \
     --submission "$SUBMISSION" \
+    --build-baseline "$BUILD_BASELINE" \
+    --stable-seed "$STABLE_SEED" \
+    --stable-svd-dim "$STABLE_SVD_DIM" \
+    --stable-recent-limit "$STABLE_RECENT_LIMIT" \
+    --stable-transition-window "$STABLE_TRANSITION_WINDOW" \
+    --stable-transition-topk "$STABLE_TRANSITION_TOPK" \
+    --stable-max-valid-events "$STABLE_MAX_VALID_EVENTS" \
+    --stable-search-rounds "$STABLE_SEARCH_ROUNDS" \
+    --stable-predict-workers "$STABLE_PREDICT_WORKERS" \
+    --stable-predict-batch-size "$STABLE_PREDICT_BATCH_SIZE" \
+    --train-stable-mlp "$TRAIN_STABLE_MLP" \
+    --stable-mlp-train-rows "$STABLE_MLP_TRAIN_ROWS" \
+    --stable-mlp-hidden "$STABLE_MLP_HIDDEN" \
+    --stable-mlp-epochs "$STABLE_MLP_EPOCHS" \
+    --stable-mlp-batch-size "$STABLE_MLP_BATCH_SIZE" \
+    --stable-mlp-lr "$STABLE_MLP_LR" \
+    --stable-mlp-output-weight "$STABLE_MLP_OUTPUT_WEIGHT" \
     --seed "$SEED" \
     --workers "$WORKERS" \
     --history-frac "$HISTORY_FRAC" \
@@ -67,7 +102,7 @@ run_final() {
 
 echo "[final] action=$ACTION start=$(date -Is)"
 case "$ACTION" in
-  all|build|train|predict|package|package-sweep)
+  all|baseline|build|train|predict|package|package-sweep)
     run_final "$ACTION"
     ;;
   *)

@@ -462,7 +462,7 @@ def package_final_result(args) -> dict:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", default="data_A")
-    p.add_argument("--baseline-root", default="/home/ma-user/work/baseline_artifacts")
+    p.add_argument("--baseline-root", default="baseline_artifacts")
     p.add_argument("--artifacts", default="artifacts")
     p.add_argument("--reports", default="reports")
     p.add_argument("--submission", default="submission")

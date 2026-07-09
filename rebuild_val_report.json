@@ -1,0 +1,69 @@
+{
+  "mode": "val",
+  "train_edges": 1995088,
+  "valid_edges": 266195,
+  "test_rows": 153420,
+  "feature_names": [
+    "rule",
+    "pop",
+    "recent_pop",
+    "trend",
+    "recency",
+    "svd",
+    "profile",
+    "transition",
+    "src_recent_exact",
+    "pair_seen",
+    "dst_known",
+    "rank_pop",
+    "rank_recent",
+    "rank_svd",
+    "rank_profile",
+    "rank_transition"
+  ],
+  "svd_dim": 128,
+  "transition_window": 12,
+  "transition_topk": 256,
+  "validation": {
+    "events": 30000,
+    "same_src_template_frac": 0.9402
+  },
+  "weights": {
+    "rule": 1.0,
+    "svd": 0.05
+  },
+  "weight_history": [
+    {
+      "mrr": 0.4314447554474136,
+      "weights": {
+        "rule": 1.0
+      }
+    },
+    {
+      "mrr": 0.46539347394913455,
+      "weights": {
+        "rule": 1.0,
+        "svd": 0.05
+      }
+    }
+  ],
+  "best_mrr": 0.46539347394913455,
+  "component_mrr": {
+    "rule": 0.4314447554474136,
+    "pop": 0.3633567827416833,
+    "recent_pop": 0.4051601549396085,
+    "trend": 0.1777924082916462,
+    "recency": 0.3063891998187487,
+    "svd": 0.3154205290465276,
+    "profile": 0.2879193164461547,
+    "transition": 0.2846873231639276,
+    "src_recent_exact": 0.0197893709500107,
+    "pair_seen": 0.01956765051217077,
+    "dst_known": 0.04263354509859212,
+    "rank_pop": 0.36343054596577457,
+    "rank_recent": 0.40577497658489203,
+    "rank_svd": 0.3154205290465276,
+    "rank_profile": 0.2879193164461547,
+    "rank_transition": 0.2986063888027135
+  }
+}
