@@ -1,0 +1,93 @@
+# Final Link Prediction
+
+This is the consolidated final project for the Jittor graph link prediction competition.
+
+## Best Known Result
+
+- Final package: `submission/result_final_blend_0p10.zip`
+- Public score observed online: `1.2829`
+- Dataset1 source: stable baseline submission CSV
+- Dataset2 strategy: `90%` stable baseline logits + `10%` context ranker logits after row z-score normalization
+
+The `0.10` blend is the known best public result. More aggressive blends can be regenerated, but they are higher risk because they change more first-ranked candidates.
+
+## Time Estimate
+
+If baseline artifacts and final logits already exist, packaging another blend takes only a few minutes.
+
+After cleanup, rebuilding from raw data is the realistic path:
+
+- Rebuild or restore baseline prerequisite artifacts: about 1.5 to 3 hours
+- Build context training samples, train rankers, predict, and package: about 2 to 3 hours
+- Buffer for Jittor/Ascend compilation and disk I/O: about 0.5 to 2 hours
+
+Realistic total: about 4 to 8 hours on the competition server.
+
+## Single Entry Point
+
+Use only this shell script:
+
+```bash
+bash scripts/train_final.sh
+```
+
+By default it runs the full final pipeline and packages `result_final_blend_0p10.zip`.
+
+Useful modes:
+
+```bash
+ACTION=build bash scripts/train_final.sh
+ACTION=train bash scripts/train_final.sh
+ACTION=predict bash scripts/train_final.sh
+ACTION=package bash scripts/train_final.sh
+ACTION=package-sweep bash scripts/train_final.sh
+```
+
+To package a different blend after logits have already been regenerated:
+
+```bash
+ACTION=package BLEND_WEIGHT=0.05 OUTPUT_NAME=result_final_blend_0p05 bash scripts/train_final.sh
+```
+
+## Required Inputs
+
+The final ranker needs baseline prerequisite outputs, normally under:
+
+```bash
+/home/ma-user/work/baseline_artifacts
+```
+
+Required pieces:
+
+- `reports/dataset2_train_report.json`
+- `artifacts/dataset2_predict_shards/feature_logits_part_*.npy`
+- `artifacts/dataset2_predict_shards/mlp_logits_part_*.npy`
+- `artifacts/dataset2_predict_shards/features_part_*.npy`
+- Dataset1 CSV from `submission_mlp_peak/result_rebuild_mlpw_5p5` or fallback `submission/result_rebuild_research_full`
+
+If these files are missing, rebuild the baseline artifacts first or restore them from backup.
+
+## Main Python Entry
+
+```bash
+python -m src.final_pipeline --help
+```
+
+The project keeps one stable interface:
+
+- `src/final_pipeline.py`: command interface and blend packaging
+- `src/ranking_pipeline.py`: context-enhanced ranking pipeline
+- `src/baseline_support.py`: baseline artifact loading and shared MLP helpers
+- `src/data.py`, `src/features.py`, `src/validation.py`: data, graph features, and metrics
+
+Generated files are ignored by git:
+
+- `artifacts/`
+- `reports/`
+- `submission/`
+- `logs/`
+
+The final submission zip should contain exactly:
+
+- `dataset1.csv`
+- `dataset2.csv`

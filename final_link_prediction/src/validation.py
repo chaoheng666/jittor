@@ -335,4 +335,3 @@ def top1_stats(scores: np.ndarray, rows: Sequence[TestRow], model: GraphFeatureM
         "top1_count_mean": float(np.mean(counts)) if len(counts) else 0.0,
         "top1_count_p95": float(np.percentile(counts, 95)) if len(counts) else 0.0,
     }
-

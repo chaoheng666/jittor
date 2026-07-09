@@ -296,4 +296,3 @@ def sample_evenly(n: int, limit: int) -> np.ndarray:
     if limit >= n:
         return np.arange(n, dtype=np.int64)
     return np.linspace(0, n - 1, limit, dtype=np.int64)
-

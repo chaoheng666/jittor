@@ -25,17 +25,17 @@ from .data import (
 )
 from .features import FEATURE_NAMES, GraphFeatureModel
 from .validation import score_feature_tensor, top1_stats
-from .v4_pipeline import (
-    V3_MLP_WEIGHT,
+from .baseline_support import (
+    BASELINE_MLP_WEIGHT,
     _as_path,
     _build_hard_worker,
     _candidate_pool,
+    _baseline_logits,
     _load_feature_mlp_predictor,
-    _load_v3_test_parts,
-    _load_v3_weights,
+    _load_baseline_test_parts,
+    _load_baseline_weights,
     _read_json,
     _train_feature_mlp,
-    _v3_baseline_logits,
 )
 
 
@@ -43,15 +43,6 @@ def _fit_model(edges: Sequence[Tuple[int, int, int]], test_rows, out_path: Path,
     model = GraphFeatureModel("dataset2", svd_dim=svd_dim, seed=seed).fit(edges, test_rows)
     model.save(out_path)
     return model
-
-
-def _v3_mlp_info(v3_root: Path) -> Tuple[Path, Path, int]:
-    report = _read_json(v3_root / "reports" / "dataset2_train_report.json")
-    jittor = report.get("jittor", {})
-    ckpt = Path(jittor.get("checkpoint", v3_root / "artifacts" / "dataset2_jittor_mlp" / "jittor_feature_mlp.pkl"))
-    norm = Path(jittor.get("norm", v3_root / "artifacts" / "dataset2_jittor_mlp" / "jittor_feature_norm.npz"))
-    hidden = int(jittor.get("hidden", 192))
-    return ckpt, norm, hidden
 
 
 class SequenceContext:
@@ -217,9 +208,9 @@ def _hard_lists_from_edges(
     )
 
 
-def build_block(args) -> dict:
+def build_context_features(args) -> dict:
     data_dir = _as_path(args.data_dir)
-    v3_root = _as_path(args.v3_root)
+    baseline_root = _as_path(args.baseline_root)
     artifacts = ensure_dir(_as_path(args.artifacts))
     reports = ensure_dir(_as_path(args.reports))
     ds_dir = dataset_dir(data_dir, "dataset2")
@@ -246,14 +237,14 @@ def build_block(args) -> dict:
     block_model_path = model_dir / "dataset2_block_history_model.pkl"
     valid_model_path = model_dir / "dataset2_split0_valid_model.pkl"
     final_model_path = model_dir / "dataset2_all_train_final_model.pkl"
-    print(f"[v5] fitting block history model edges={len(history_edges)}", flush=True)
+    print(f"[final] fitting block history model edges={len(history_edges)}", flush=True)
     block_model = _fit_model(history_edges, test_rows, block_model_path, int(args.seed), int(args.svd_dim))
-    print(f"[v5] fitting split0 validation model edges={len(split0)}", flush=True)
+    print(f"[final] fitting split0 validation model edges={len(split0)}", flush=True)
     valid_model = _fit_model(split0, test_rows, valid_model_path, int(args.seed) + 1, int(args.svd_dim))
 
-    weights = _load_v3_weights(v3_root)
+    weights = _load_baseline_weights(baseline_root)
     hard_dir = ensure_dir(artifacts / "block_hard")
-    print(f"[v5] building train hard lists rows={len(train_edges)}", flush=True)
+    print(f"[final] building train hard lists rows={len(train_edges)}", flush=True)
     train_x, train_src, train_dst, train_y, train_parts = _hard_lists_from_edges(
         block_model_path,
         block_model,
@@ -265,10 +256,10 @@ def build_block(args) -> dict:
         int(args.max_pool),
         int(args.seed),
     )
-    print("[v5] appending train src-sequence and dst-audience tower features", flush=True)
+    print("[final] appending train src-sequence and dst-audience tower features", flush=True)
     train_ctx = SequenceContext(block_model, history_edges, dst_seq_len=int(args.dst_seq_len))
     train_x = _append_sequence_features(train_x.astype(np.float32), train_src, train_dst, train_ctx, src_seq_len=int(args.src_seq_len)).astype(np.float16)
-    print(f"[v5] building valid hard lists rows={len(valid_edges)}", flush=True)
+    print(f"[final] building valid hard lists rows={len(valid_edges)}", flush=True)
     valid_x, valid_src, valid_dst, valid_y, valid_parts = _hard_lists_from_edges(
         valid_model_path,
         valid_model,
@@ -280,15 +271,15 @@ def build_block(args) -> dict:
         int(args.max_pool),
         int(args.seed) + 17,
     )
-    print("[v5] appending valid src-sequence and dst-audience tower features", flush=True)
+    print("[final] appending valid src-sequence and dst-audience tower features", flush=True)
     valid_ctx = SequenceContext(valid_model, split0, dst_seq_len=int(args.dst_seq_len))
     valid_x = _append_sequence_features(valid_x.astype(np.float32), valid_src, valid_dst, valid_ctx, src_seq_len=int(args.src_seq_len)).astype(np.float16)
-    train_path = artifacts / "v5_block_train.npz"
-    valid_path = artifacts / "v5_block_valid.npz"
+    train_path = artifacts / "final_train.npz"
+    valid_path = artifacts / "final_valid.npz"
     np.savez_compressed(train_path, features=train_x, src_ids=train_src, dst_ids=train_dst, labels=train_y)
     np.savez_compressed(valid_path, features=valid_x, src_ids=valid_src, dst_ids=valid_dst, labels=valid_y)
 
-    print(f"[v5] fitting final all-train model", flush=True)
+    print(f"[final] fitting final all-train model", flush=True)
     all_rows = read_train(ds_dir / "train.csv")
     all_edges = [(r.src, r.dst, r.time) for r in all_rows]
     if int(args.fit_edge_limit) > 0:
@@ -321,16 +312,16 @@ def build_block(args) -> dict:
         },
         "parts": {"train": train_parts, "valid": valid_parts},
     }
-    dump_json(reports / "v5_block_build_report.json", report)
+    dump_json(reports / "final_build_report.json", report)
     print(json.dumps(report, indent=2, ensure_ascii=False)[:6000], flush=True)
     return report
 
 
-def train_block_mlp(args) -> dict:
+def train_context_ranker(args) -> dict:
     artifacts = ensure_dir(_as_path(args.artifacts))
     reports = ensure_dir(_as_path(args.reports))
-    train = np.load(artifacts / "v5_block_train.npz")
-    valid = np.load(artifacts / "v5_block_valid.npz")
+    train = np.load(artifacts / "final_train.npz")
+    valid = np.load(artifacts / "final_valid.npz")
     train_x = train["features"].astype(np.float32)
     valid_x = valid["features"].astype(np.float32)
     train_y = train["labels"].astype(np.int64)
@@ -343,7 +334,7 @@ def train_block_mlp(args) -> dict:
                 train_y,
                 valid_x,
                 valid_y,
-                out_dir=artifacts / f"v5_block_mlp_seed{seed}",
+                out_dir=artifacts / f"final_mlp_seed{seed}",
                 seed=seed,
                 hidden=int(args.hidden),
                 epochs=int(args.epochs),
@@ -354,7 +345,7 @@ def train_block_mlp(args) -> dict:
             item = {"status": "failed", "seed": seed, "error": repr(exc)}
         out.append(item)
     report = {"models": out}
-    dump_json(reports / "v5_block_mlp_report.json", report)
+    dump_json(reports / "final_model_report.json", report)
     print(json.dumps(report, indent=2, ensure_ascii=False)[:6000], flush=True)
     return report
 
@@ -382,30 +373,30 @@ def _feature_worker(payload: tuple) -> str:
     return str(path)
 
 
-def predict_block(args) -> dict:
+def predict_context_ranker(args) -> dict:
     data_dir = _as_path(args.data_dir)
-    v3_root = _as_path(args.v3_root)
+    baseline_root = _as_path(args.baseline_root)
     artifacts = ensure_dir(_as_path(args.artifacts))
     reports = ensure_dir(_as_path(args.reports))
-    build = _read_json(reports / "v5_block_build_report.json")
+    build = _read_json(reports / "final_build_report.json")
     test_rows = read_test(dataset_dir(data_dir, "dataset2") / "test.csv")
     final_model_path = Path(build["final_model"])
-    if str(args.reuse_v3_features) == "1":
-        features, feature_logits, mlp_logits = _load_v3_test_parts(v3_root)
+    if str(args.reuse_baseline_features) == "1":
+        features, feature_logits, mlp_logits = _load_baseline_test_parts(baseline_root)
     else:
-        features = _feature_tensor_sharded(final_model_path, test_rows, artifacts / "v5_test_features", int(args.workers))
-        weights = _load_v3_weights(v3_root)
+        features = _feature_tensor_sharded(final_model_path, test_rows, artifacts / "final_test_features", int(args.workers))
+        weights = _load_baseline_weights(baseline_root)
         feature_logits = score_feature_tensor(features, weights).astype(np.float32)
-        _, _, mlp_logits = _load_v3_test_parts(v3_root)
+        _, _, mlp_logits = _load_baseline_test_parts(baseline_root)
     final_model = GraphFeatureModel.load(final_model_path)
     test_src = np.asarray([r.src for r in test_rows], dtype=np.int64)
     test_dst = np.asarray([r.candidates for r in test_rows], dtype=np.int64)
-    print("[v5] appending test src-sequence and dst-audience tower features", flush=True)
+    print("[final] appending test src-sequence and dst-audience tower features", flush=True)
     final_ctx = SequenceContext(final_model, [(r.src, r.dst, r.time) for r in read_train(dataset_dir(data_dir, "dataset2") / "train.csv")], dst_seq_len=int(args.dst_seq_len))
     features = _append_sequence_features(features.astype(np.float32), test_src, test_dst, final_ctx, src_seq_len=int(args.src_seq_len))
-    baseline = _v3_baseline_logits(feature_logits, mlp_logits, V3_MLP_WEIGHT)
+    baseline = _baseline_logits(feature_logits, mlp_logits, BASELINE_MLP_WEIGHT)
 
-    model_report = _read_json(reports / "v5_block_mlp_report.json")
+    model_report = _read_json(reports / "final_model_report.json")
     logits = []
     for item in model_report["models"]:
         if item.get("status") != "trained":
@@ -413,38 +404,38 @@ def predict_block(args) -> dict:
         predictor = _load_feature_mlp_predictor(Path(item["checkpoint"]), Path(item["norm"]), hidden=int(args.hidden))
         logits.append(predictor(features, batch_size=int(args.predict_batch_size)))
     if not logits:
-        raise RuntimeError("no trained v5 block models")
-    block = np.mean([row_zscore(x) for x in logits], axis=0).astype(np.float32)
-    np.save(artifacts / "v5_block_ens.logits.npy", block)
-    np.save(artifacts / "v5_baseline_mlpw5p5.logits.npy", baseline)
+        raise RuntimeError("no trained context ranking models")
+    context_logits = np.mean([row_zscore(x) for x in logits], axis=0).astype(np.float32)
+    np.save(artifacts / "final_context_ensemble.logits.npy", context_logits)
+    np.save(artifacts / "final_baseline.logits.npy", baseline)
     report = {
         "models": len(logits),
-        "shape": list(block.shape),
-        "reuse_v3_features": str(args.reuse_v3_features),
-        "top1_change_vs_v3": top1_change(baseline, block),
+        "shape": list(context_logits.shape),
+        "reuse_baseline_features": str(args.reuse_baseline_features),
+        "top1_change_vs_baseline": top1_change(baseline, context_logits),
         "baseline_top1": top1_stats(baseline, test_rows, final_model),
-        "block_top1": top1_stats(block, test_rows, final_model),
+        "context_top1": top1_stats(context_logits, test_rows, final_model),
     }
-    dump_json(reports / "v5_block_predict_report.json", report)
+    dump_json(reports / "final_predict_report.json", report)
     print(json.dumps(report, indent=2, ensure_ascii=False)[:5000], flush=True)
     return report
 
 
-def pack_block(args) -> dict:
-    v3_root = _as_path(args.v3_root)
+def package_final_result(args) -> dict:
+    baseline_root = _as_path(args.baseline_root)
     artifacts = _as_path(args.artifacts)
     reports = ensure_dir(_as_path(args.reports))
     submission = ensure_dir(_as_path(args.submission))
-    baseline = np.load(artifacts / "v5_baseline_mlpw5p5.logits.npy")
-    block = np.load(artifacts / "v5_block_ens.logits.npy")
+    baseline = np.load(artifacts / "final_baseline.logits.npy")
+    context_logits = np.load(artifacts / "final_context_ensemble.logits.npy")
     blend_weight = float(args.blend_weight)
     if not 0.0 <= blend_weight <= 1.0:
         raise ValueError(f"blend_weight must be between 0 and 1, got {blend_weight}")
-    name = str(args.output_name or "result_v5_block_blend_0p10")
-    logits = row_zscore(baseline) * (1.0 - blend_weight) + row_zscore(block) * blend_weight
-    dataset1_src = v3_root / "submission_mlp_peak" / "result_rebuild_mlpw_5p5" / "dataset1.csv"
+    name = str(args.output_name or "result_final_blend_0p10")
+    logits = row_zscore(baseline) * (1.0 - blend_weight) + row_zscore(context_logits) * blend_weight
+    dataset1_src = baseline_root / "submission_mlp_peak" / "result_rebuild_mlpw_5p5" / "dataset1.csv"
     if not dataset1_src.exists():
-        dataset1_src = v3_root / "submission" / "result_rebuild_research_full" / "dataset1.csv"
+        dataset1_src = baseline_root / "submission" / "result_rebuild_research_full" / "dataset1.csv"
     out_dir = ensure_dir(submission / name)
     d1 = out_dir / "dataset1.csv"
     d2 = out_dir / "dataset2.csv"
@@ -459,19 +450,19 @@ def pack_block(args) -> dict:
             "blend_weight": blend_weight,
             "dataset1": validate_csv(d1, 61051),
             "dataset2": d2_check,
-            "top1_change_vs_v3": top1_change(baseline, logits),
+            "top1_change_vs_baseline": top1_change(baseline, logits),
             "zip_size": zip_path.stat().st_size,
         }
     }
     print(f"packed {name} {manifest[name]}", flush=True)
-    dump_json(reports / "v5_block_pack_manifest.json", manifest)
+    dump_json(reports / "final_pack_manifest.json", manifest)
     return manifest
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", default="data_A")
-    p.add_argument("--v3-root", default="/home/ma-user/work/jittor_rebuild_v3")
+    p.add_argument("--baseline-root", default="/home/ma-user/work/baseline_artifacts")
     p.add_argument("--artifacts", default="artifacts")
     p.add_argument("--reports", default="reports")
     p.add_argument("--submission", default="submission")
@@ -491,33 +482,33 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=512)
     p.add_argument("--predict-batch-size", type=int, default=2048)
     p.add_argument("--lr", type=float, default=8e-4)
-    p.add_argument("--reuse-v3-features", default="0")
+    p.add_argument("--reuse-baseline-features", default="0")
     p.add_argument("--blend-weight", type=float, default=0.10)
-    p.add_argument("--output-name", default="result_v5_block_blend_0p10")
+    p.add_argument("--output-name", default="result_final_blend_0p10")
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("build-block")
-    sub.add_parser("train-block-mlp")
-    sub.add_parser("predict-block")
-    sub.add_parser("pack-block")
+    sub.add_parser("build")
+    sub.add_parser("train")
+    sub.add_parser("predict")
+    sub.add_parser("package")
     sub.add_parser("run-all")
     return p
 
 
 def main() -> None:
     args = parser().parse_args()
-    if args.command == "build-block":
-        build_block(args)
-    elif args.command == "train-block-mlp":
-        train_block_mlp(args)
-    elif args.command == "predict-block":
-        predict_block(args)
-    elif args.command == "pack-block":
-        pack_block(args)
+    if args.command == "build":
+        build_context_features(args)
+    elif args.command == "train":
+        train_context_ranker(args)
+    elif args.command == "predict":
+        predict_context_ranker(args)
+    elif args.command == "package":
+        package_final_result(args)
     elif args.command == "run-all":
-        build_block(args)
-        train_block_mlp(args)
-        predict_block(args)
-        pack_block(args)
+        build_context_features(args)
+        train_context_ranker(args)
+        predict_context_ranker(args)
+        package_final_result(args)
     else:
         raise SystemExit(args.command)
 

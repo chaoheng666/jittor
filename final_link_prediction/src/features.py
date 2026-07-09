@@ -377,4 +377,3 @@ class GraphFeatureModel:
             scores[start:start + len(chunk)] = score_feature_tensor(feats, weights)
             print(f"scored dataset={self.dataset} rows={start + len(chunk)}", flush=True)
         return scores
-
