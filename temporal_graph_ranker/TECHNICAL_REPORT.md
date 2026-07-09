@@ -117,8 +117,9 @@ Ascend 910B.  The pipeline treats them as separate resources:
 - Feature tensors are built with up to 96 workers, pinned by default to cores
   64-191.  `numactl --interleave=all` distributes allocations across NUMA
   nodes.
-- BLAS is restricted to one thread during feature workers.  Sparse SVD is
-  explicitly allowed a bounded 32-thread pool through `threadpoolctl`.
+- BLAS is restricted to one thread during feature workers. Stable and context
+  graphs use 128-dimensional sparse SVD, with a bounded 32-thread BLAS pool
+  through `threadpoolctl` when the numerical backend supports it.
 - Training uses the Ascend device with batch size 4096.  The environment's
   Jittor ACL backend cannot backpropagate through `Embedding`, so the design
   intentionally uses robust precomputed graph and sequence features rather

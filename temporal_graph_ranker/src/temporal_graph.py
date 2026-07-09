@@ -253,63 +253,27 @@ class GraphFeatureModel:
         self.dst_emb = dst_emb / np.maximum(np.linalg.norm(dst_emb, axis=1, keepdims=True), 1e-6)
 
     def _fit_transition(self, rows: Sequence[Edge]) -> None:
-        edge_array = np.asarray(rows, dtype=np.int64)
-        if len(edge_array) < 2:
-            self.transition = {}
-            return
-        # Group each source's interactions by time once, then form every
-        # within-source lag with vector operations.  The old implementation
-        # executed this exact 16-lag logic in nested Python loops.
-        order = np.lexsort((edge_array[:, 1], edge_array[:, 2], edge_array[:, 0]))
-        src = edge_array[order, 0]
-        dst = edge_array[order, 1]
-        key_base = int(max(int(dst.max()) + 1, 1))
-        key_parts = []
-        value_parts = []
-        for lag in range(1, self.transition_window + 1):
-            prev = dst[:-lag]
-            curr = dst[lag:]
-            same_src = src[:-lag] == src[lag:]
-            valid = same_src & (prev != curr)
-            if not np.any(valid):
-                continue
-            key_parts.append(prev[valid] * key_base + curr[valid])
-            value_parts.append(np.full(int(valid.sum()), 1.0 / math.sqrt(lag), dtype=np.float32))
-        if not key_parts:
-            self.transition = {}
-            return
-        keys = np.concatenate(key_parts)
-        values = np.concatenate(value_parts)
-        order = np.argsort(keys)
-        keys = keys[order]
-        values = values[order]
-        starts = np.r_[0, np.flatnonzero(keys[1:] != keys[:-1]) + 1]
-        unique_keys = keys[starts]
-        unique_values = np.add.reduceat(values, starts)
-        prev_values = unique_keys // key_base
-        dst_values = unique_keys % key_base
-        prev_starts = np.r_[0, np.flatnonzero(prev_values[1:] != prev_values[:-1]) + 1]
-        prev_ends = np.r_[prev_starts[1:], len(prev_values)]
+        by_src = defaultdict(list)
+        for src, dst, time in rows:
+            by_src[src].append((time, dst))
+        raw = defaultdict(Counter)
+        for seq in by_src.values():
+            seq.sort()
+            recent = deque(maxlen=self.transition_window)
+            for _time, dst in seq:
+                for rank, prev_dst in enumerate(reversed(recent), start=1):
+                    if prev_dst != dst:
+                        raw[prev_dst][dst] += 1.0 / math.sqrt(rank)
+                recent.append(dst)
         transition = {}
-        for start, end in zip(prev_starts, prev_ends):
-            prev_dst = int(prev_values[start])
-            local_values = unique_values[start:end]
-            local_dst = dst_values[start:end]
-            take = min(self.transition_topk, len(local_values))
-            if take <= 0:
-                continue
-            if take < len(local_values):
-                selected = np.argpartition(local_values, -take)[-take:]
-                selected = selected[np.argsort(-local_values[selected])]
-            else:
-                selected = np.argsort(-local_values)
+        for prev_dst, counter in raw.items():
             prev_norm = math.sqrt(math.log1p(float(self.dst_count.get(prev_dst, 1))))
             keep = {}
-            for idx in selected:
-                candidate = int(local_dst[int(idx)])
-                dst_norm = math.sqrt(math.log1p(float(self.dst_count.get(candidate, 1))))
-                keep[candidate] = math.log1p(float(local_values[int(idx)])) / max(prev_norm * dst_norm, 1e-6)
-            transition[prev_dst] = keep
+            for dst, value in counter.most_common(self.transition_topk):
+                dst_norm = math.sqrt(math.log1p(float(self.dst_count.get(dst, 1))))
+                keep[dst] = math.log1p(float(value)) / max(prev_norm * dst_norm, 1e-6)
+            if keep:
+                transition[prev_dst] = keep
         self.transition = transition
 
     def _svd_scores(self, src: int, candidates: Sequence[int]) -> np.ndarray:

@@ -362,10 +362,22 @@ def build_context_features(args) -> dict:
     block_model_path = model_dir / "history_graph.pkl"
     valid_model_path = model_dir / "validation_graph.pkl"
     inference_model_path = model_dir / "inference_graph.pkl"
+    stable_artifacts = baseline_root / "artifacts"
+    stable_valid_path = stable_artifacts / "dataset2_feature_model_val.pkl"
+    stable_inference_path = stable_artifacts / "dataset2_feature_model_final.pkl"
+    reuse_stable_graphs = str(args.reuse_stable_graphs) == "1"
+    model_sources = {"history": "fitted"}
     print(f"[ranker] fitting history graph edges={len(history_edges)}", flush=True)
     block_model = _fit_model(history_edges, test_rows, block_model_path, int(args.seed), int(args.svd_dim))
-    print(f"[ranker] fitting validation graph edges={len(split0)}", flush=True)
-    valid_model = _fit_model(split0, test_rows, valid_model_path, int(args.seed) + 1, int(args.svd_dim))
+    if reuse_stable_graphs and stable_valid_path.exists():
+        print(f"[ranker] reusing stable validation graph {stable_valid_path}", flush=True)
+        valid_model = GraphFeatureModel.load(stable_valid_path)
+        valid_model_path = stable_valid_path
+        model_sources["validation"] = "stable_baseline"
+    else:
+        print(f"[ranker] fitting validation graph edges={len(split0)}", flush=True)
+        valid_model = _fit_model(split0, test_rows, valid_model_path, int(args.seed) + 1, int(args.svd_dim))
+        model_sources["validation"] = "fitted"
 
     weights = _load_baseline_weights(baseline_root)
     hard_dir = ensure_dir(artifacts / "hard_candidates")
@@ -457,12 +469,18 @@ def build_context_features(args) -> dict:
     np.savez(train_path, features=train_x, src_ids=train_src, dst_ids=train_dst, labels=train_y)
     np.savez(valid_path, features=valid_x, src_ids=valid_src, dst_ids=valid_dst, labels=valid_y)
 
-    print("[ranker] fitting all-train inference graph", flush=True)
-    all_rows = read_train(ds_dir / "train.csv")
-    all_edges = [(r.src, r.dst, r.time) for r in all_rows]
-    if int(args.fit_edge_limit) > 0:
-        all_edges = all_edges[: min(len(all_edges), int(args.fit_edge_limit))]
-    _fit_model(all_edges, test_rows, inference_model_path, int(args.seed) + 2, int(args.svd_dim))
+    if reuse_stable_graphs and stable_inference_path.exists():
+        print(f"[ranker] reusing stable inference graph {stable_inference_path}", flush=True)
+        inference_model_path = stable_inference_path
+        model_sources["inference"] = "stable_baseline"
+    else:
+        print("[ranker] fitting all-train inference graph", flush=True)
+        all_rows = read_train(ds_dir / "train.csv")
+        all_edges = [(r.src, r.dst, r.time) for r in all_rows]
+        if int(args.fit_edge_limit) > 0:
+            all_edges = all_edges[: min(len(all_edges), int(args.fit_edge_limit))]
+        _fit_model(all_edges, test_rows, inference_model_path, int(args.seed) + 2, int(args.svd_dim))
+        model_sources["inference"] = "fitted"
 
     valid_feature_logits = score_feature_tensor(valid_x[:, :, : len(FEATURE_NAMES)].astype(np.float32), weights)
     report = {
@@ -485,6 +503,7 @@ def build_context_features(args) -> dict:
         "block_model": str(block_model_path),
         "valid_model": str(valid_model_path),
         "inference_model": str(inference_model_path),
+        "model_sources": model_sources,
         "feature_valid_mrr": tie_aware_mrr(valid_feature_logits, valid_y),
         "label_check": {
             "train_min": int(train_y.min()),
